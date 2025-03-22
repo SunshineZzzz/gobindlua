@@ -1,0 +1,42 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "test dlv cgo",
+			"type": "go",
+			"request": "launch",
+			"mode": "test",
+			"program": "${fileDirname}",
+			"env": {
+				"CGO_ENABLED": "1",
+				"CC": "gcc",
+				"CGO_CFLAGS": "-O0 -g"
+			},
+			"buildFlags": "-tags=lua547",
+			"args": []
+		},
+		{
+			"name": "test gdb cgo",
+			"type": "by-gdb",
+			"request": "launch",
+			"program": "gdbGoTest.exe",
+			"cwd": "${workspaceRoot}",
+			"preLaunchTask": "build cgo test",
+			"postDebugTask": "clean cgo test"
+		},
+		{
+			"type": "lua",
+			"request": "launch",
+			"tag": "independent_file",
+			"name": "LuaPanda-IndependentFile",
+			"description": "独立文件调试模式,使用前请参考文档",
+			"cwd": "${workspaceFolder}",
+			"luaPath": "D:\\github\\gobindlua\\hotfix\\lua.exe",
+			"packagePath": [],
+			"luaFileExtension": "",
+			"connectionPort": 8820,
+			"stopOnEntry": true,
+			"useCHook": true,
+		}
+	]
+}
