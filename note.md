@@ -1139,5 +1139,400 @@ func withCancel(parent Context) *cancelCtx {
 ```
 
 9. CGO 
+> 要使用 CGO 特性，需要安装 C/C++ 构建工具链，在 macOS 和 Linux 下是要安装 GCC，在 windows 下是需要安装 MinGW 工具。同时需要保证环境变量 CGO_ENABLED 被设置为 1，这表示 CGO 是被启用的状态。
 
+   - 启用CGO
+   > import "C"，导入一个伪包C。随后，Go代码即可引用诸如C.size_t之类的类型、C.stdout之类的变量，或C.putchar之类的函数。
+   
+   - preamble
+   > 通过import "C"语句启用CGO，CGO 会将紧跟的上一行代码所处注释块的内容视为C代码块，被称为序文(preamble)。例如：
+   ```Go
+   // #include <stdio.h>
+   // #include <errno.h>
+   import "C"
+   ```
+   > 序文部分可包含任意C语言代码，包括函数声明与变量声明。这些内容可在Go代码中被引用，如同它们定义在C包中一般。前言中声明的所有名称均可使用，即使其以小写字母开头。例外情况：前言中的静态变量不可在Go代码中被引用；静态函数则允许使用。
 
+   - 编译选项
+   > 同样实在徐文中编写，比如
+   ```Go
+   // #cgo CFLAGS: -DPNG_DEBUG=1
+   // #cgo amd64 386 CFLAGS: -DX86=1
+   // #cgo LDFLAGS: -lpng  
+   // #include <png.h>
+   import "C"
+   ```
+   ```Go
+    package main
+
+    /*
+    #cgo windows,lua547 CFLAGS: -DCGO_OS_WINDOWS=1
+    #cgo darwin,lua547 CFLAGS: -DCGO_OS_DARWIN=1
+    #cgo linux,lua547 CFLAGS: -DCGO_OS_LINUX=1
+
+    #if defined(CGO_OS_WINDOWS)
+        const char* os = "windows";
+    #elif defined(CGO_OS_DARWIN)
+        const char* os = "darwin";
+    #elif defined(CGO_OS_LINUX)
+        const char* os = "linux";
+    #else
+    #	error(unknown os)
+    #endif
+    */
+    import "C"
+
+    func main() {
+        print(C.GoString(C.os))
+    }
+   ```
+
+   - build tag 
+   > build tag 是在 Go 或 cgo 环境下的 C/C++ 文件开头的一种特殊的注释。条件编译类似于前面通过 #cgo 指令针对不同平台定义的宏，只有在对应平台的宏被定义之后才会构建对应的代码。但是通过 #cgo 指令定义宏有个限制，它只能是基于 Go 语言支持的 windows、darwin 和 linux 等已经支持的操作系统。如果我们希望定义一个 DEBUG 标志的宏，#cgo 指令就无能为力了。而 Go 语言提供的 build tag 条件编译特性则可以简单做到。
+   ```Go
+    //go:build linux,386 darwin,!cgo
+   ```
+   > 意味着这个 Go 源文件将在以下任何一种条件满足时被 Go 编译器包含：
+   >
+   > 操作系统为 Linux 且架构为 386
+   > 
+   > 操作系统为 Darwin（macOS）且 CGO 未被启用
+
+   - 数值类型映射关系
+
+| C 语言类型 | CGO 类型 | Go 语言类型 |
+| :-----| ----: | :----: |
+| char | C.char | byte |
+| signed char | C.schar | int8 |
+| unsigned char | C.uchar | uint8 |
+| short | C.short | int16 |
+| unsigned short | C.ushort | uint16 |
+| int | C.int | int32 |
+| unsigned int | C.uint | uint32 |
+| long | C.long | int32 |
+| unsigned long | C.ulong | uint32 |
+| long long int | C.longlong | int64 |
+| unsigned long long int | C.ulonglong | uint64 |
+| float | C.float | float32 |
+| double | C.double | float64 |
+| size_t | C.size_t | uint |
+| int8_t | C.int8_t | int8 |
+| uint8_t | C.uint8_t | uint8 |
+| int16_t | C.int16_t | int16 |
+| uint16_t | C.uint16_t | uint16 |
+| int32_t | C.int32_t | int32 |
+| uint32_t | C.uint32_t | uint32 |
+| int64_t | C.int64_t | int64 |
+| uint64_t | C.uint64_t | uint64 |
+   ```C
+    // Go string to C string
+    // The C string is allocated in the C heap using malloc.
+    // It is the caller's responsibility to arrange for it to be
+    // freed, such as by calling C.free (be sure to include stdlib.h
+    // if C.free is needed).
+    func C.CString(string) *C.char
+
+    // Go []byte slice to C array
+    // The C array is allocated in the C heap using malloc.
+    // It is the caller's responsibility to arrange for it to be
+    // freed, such as by calling C.free (be sure to include stdlib.h
+    // if C.free is needed).
+    func C.CBytes([]byte) unsafe.Pointer
+
+    // C string to Go string
+    func C.GoString(*C.char) string
+
+    // C data with explicit length to Go string
+    func C.GoStringN(*C.char, C.int) string
+
+    // C data with explicit length to Go []byte
+    func C.GoBytes(unsafe.Pointer, C.int) []byte
+   ```
+
+   - Go中一些类型在C中也有对应的类型
+   ```C
+    // _cgo_export.h
+    #ifndef GO_CGO_EXPORT_PROLOGUE_H
+    #define GO_CGO_EXPORT_PROLOGUE_H
+
+    #ifndef GO_CGO_GOSTRING_TYPEDEF
+    typedef struct { const char *p; ptrdiff_t n; } _GoString_;
+    extern size_t _GoStringLen(_GoString_ s);
+    extern const char *_GoStringPtr(_GoString_ s);
+    #endif
+
+    #endif 
+
+    typedef signed char GoInt8;
+    typedef unsigned char GoUint8;
+    typedef short GoInt16;
+    typedef unsigned short GoUint16;
+    typedef int GoInt32;
+    typedef unsigned int GoUint32;
+    typedef long long GoInt64;
+    typedef unsigned long long GoUint64;
+    typedef GoInt64 GoInt;
+    typedef GoUint64 GoUint;
+    typedef size_t GoUintptr;
+    typedef float GoFloat32;
+    typedef double GoFloat64;
+
+    #ifndef GO_CGO_GOSTRING_TYPEDEF
+    typedef _GoString_ GoString;
+    #endif
+    typedef void *GoMap;
+    typedef void *GoChan;
+    typedef struct { void *t; void *v; } GoInterface;
+    typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
+   ```
+
+   - 结构体、联合、枚举类型
+   ```Go
+    /*
+    struct A {
+        int i;
+        float f;
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var a C.struct_A
+        fmt.Println(a.i)
+        fmt.Println(a.f)
+    }
+   ```
+   ```Go
+    /*
+    struct A {
+        int type; // type 是 Go 语言的关键字
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var a C.struct_A
+        fmt.Println(a._type) // _type 对应 type
+    }   
+   ```
+   ```Go
+    /*
+    struct A {
+        int   type;  // type 是 Go 语言的关键字
+        float _type; // 将屏蔽 CGO 对 type 成员的访问
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var a C.struct_A
+        fmt.Println(a._type) // _type 对应 _type
+    }
+   ```
+   ```Go
+    /*
+    struct A {
+        int   size: 10; // 位字段无法访问
+        float arr[];    // 零长的数组也无法访问
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var a C.struct_A
+        fmt.Println(a.size) // 错误: 位字段无法访问
+        fmt.Println(a.arr)  // 错误: 零长的数组也无法访问
+    }
+   ```
+   ```Go
+    /*
+    #include <stdint.h>
+
+    union B {
+        int i;
+        float f;
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var b C.union_B;
+        fmt.Println("b.i:", *(*C.int)(unsafe.Pointer(&b)))
+        fmt.Println("b.f:", *(*C.float)(unsafe.Pointer(&b)))
+    }
+   ```
+   ```Go
+    /*
+    #include <stdint.h>
+
+    union B1 {
+        int i;
+        float f;
+    };
+
+    union B2 {
+        int8_t i8;
+        int64_t i64;
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var b1 C.union_B1;
+        fmt.Printf("%T\n", b1) // [4]uint8
+
+        var b2 C.union_B2;
+        fmt.Printf("%T\n", b2) // [8]uint8
+    }   
+   ```
+   ```Go
+    /*
+    enum C {
+        ONE,
+        TWO,
+    };
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        var c C.enum_C = C.TWO
+        fmt.Println(c)
+        fmt.Println(C.ONE)
+        fmt.Println(C.TWO)
+    }
+   ```
+
+   - Go 调用 C 函数
+   ```Go
+    /*
+    #include <errno.h>
+
+    static int div(int a, int b) {
+        if(b == 0) {
+            errno = EINVAL;
+            return 0;
+        }
+        return a/b;
+    }
+    */
+    import "C"
+    import "fmt"
+
+    func main() {
+        v0, err0 := C.div(2, 1)
+        // 2 <nil>
+        fmt.Println(v0, err0)
+
+        v1, err1 := C.div(1, 0)
+        // 0 invalid argument
+        fmt.Println(v1, err1)
+    }
+   ```
+
+   - C 调用 Go
+   ```Go
+    package main
+
+    //#include <stdlib.h>
+    //void SayHello(char* s);
+    import "C"
+
+    import (
+        "fmt"
+        "unsafe"
+    )
+
+    func main() {
+        szStr := C.CString("Hello, World\n")
+        defer C.free(unsafe.Pointer(szStr))
+
+        C.SayHello(szStr)
+    }
+
+    //export SayHello
+    func SayHello(s *C.char) {
+        fmt.Print(C.GoString(s))
+    }
+   ```
+
+   - 传递指针存在问题
+   > Go是一种具有垃圾回收机制的语言，垃圾回收器需要知道指向Go内存的每个指针的位置。因此，在Go和C之间传递指针存在限制。
+   >
+   > Go调用C Code时，Go传递给C Code的Go指针所指的Go Memory中不能包含任何指向Go Memory的Pointer。因为后者指向Go Memory的指针有可能移动，前者Go指针在调用期间会被隐式固定。
+   >
+   > 如果写出上述代码，就会运行时报错：panic runtime error: cgo argument has Go pointer to Go pointer。如下例子所:
+   ```Go
+    package main
+
+    /*
+    #include <stdio.h>
+    struct Foo {
+        int a;
+        int *p;
+    };
+
+    void plusOne(struct Foo *f) {
+        (f->a)++;
+        *(f->p)++;
+    }
+    */
+    import "C"
+    import "unsafe"
+    import "fmt"
+
+    func main() {
+        f := &C.struct_Foo{}
+        f.a = 5
+        f.p = (*C.int)((unsafe.Pointer)(new(int)))
+        // f.p = &f.a
+
+        C.plusOne(f)
+        fmt.Println(int(f.a))
+    }
+   ```
+   >  Go 1.21 版本，新增runtime.Pinner，用来​​手动​​告诉 Go 的垃圾回收器："​这块内存我现在要交给 C 代码了，在我说可以之前，你不要移动或回收它​​。
+   ```Go
+    package main
+
+    /*
+    #include <stdio.h>
+    struct Foo {
+        int a;
+        int *p;
+    };
+
+    void plusOne(struct Foo *f) {
+        (f->a)++;
+        *(f->p)++;
+    }
+    */
+    import "C"
+    import (
+        "fmt"
+        "runtime"
+        "unsafe"
+    )
+
+    func main() {
+        f := &C.struct_Foo{}
+        f.a = 5
+        f.p = (*C.int)((unsafe.Pointer)(new(int)))
+        // f.p = &f.a
+
+        var pinner runtime.Pinner
+        defer pinner.Unpin()
+        pinner.Pin(f.p)
+
+        C.plusOne(f)
+        fmt.Println(int(f.a))
+    }   
+   ```
+   
+   - 内部机制
