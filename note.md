@@ -1643,4 +1643,139 @@ func withCancel(parent Context) *cancelCtx {
    > 
    > system call结束以后，绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。c 线程被唤醒后，拿到 P，继续执行。
 
-10. 泛型
+10. 泛型(https://segmentfault.com/a/1190000041634906)
+
+![alt text](img/generic1.webp)
+> 在Go1.18之前，Go官方对 接口(interface) 的定义是：接口是一个方法集(method set)
+>
+> An interface type specifies a **method set** called its interface
+```Go
+type ReadWriter interface {
+    Read(p []byte) (n int, err error)
+    Write(p []byte) (n int, err error)
+}
+```
+> Go1.18开始就是依据这一点将接口的定义正式更改为了 类型集(Type set)
+>
+> An interface type defines a **type set**
+>
+> 基本接口: 接口定义中如果只有方法的话，那么这种接口被称为基本接口(Basic interface)。这种接口就是Go1.18之前的接口，用法也基本和Go1.18之前保持一致。
+>
+> 一般接口: 接口定义中如果有方法，也有类型限制的话，那么这种接口被称为一般接口(General interface)。
+```Go
+// 一般接口，接口类型 ReadWriter 代表了一个类型集合，所有以 string 或 []rune 为底层类型，并且实现了 Read() Write() 这两个方法的类型都在 ReadWriter 代表的类型集当中
+type ReadWriter interface {
+    ~string | ~[]rune
+
+    Read(p []byte) (n int, err error)
+    Write(p []byte) (n int, err error)
+}
+```
+```Go
+type MyReadWriter []rune
+
+func (rw *MyReadWriter) Read(p []byte) (n int, err error) {
+    ...
+}
+
+func (rw *MyReadWriter) Write(p []byte) (n int, err error) {
+    ...
+}
+```
+> 泛型接口
+```Go
+type DataProcessor[T any] interface {
+    Process(oriData T) (newData T)
+    Save(data T) error
+}
+
+type DataProcessor2[T any] interface {
+    int | ~struct{ Data interface{} }
+
+    Process(data T) (newData T)
+    Save(data T) error
+}
+```
+> 给一个LRU缓存实现例子
+```Go
+package lrucache
+
+import (
+	"container/list"
+	"sync"
+)
+
+type KeyType interface {
+	~int8|~uint8|~int16|~uint16|~uint32|~int32|~int64|~uint64|string
+}
+
+type LRUCache[KT KeyType, VT any] struct {
+	// 读写互斥锁
+	mu sync.RWMutex
+	// 容量
+	capacity int
+	// key<->*list.Element
+	cache map[KT]*list.Element
+	// 双向链表
+	list *list.List
+}
+
+type entry[KT KeyType, VT any] struct {
+	// 键
+	key KT
+	// 值
+	value *VT
+}
+
+func NewLRUCache[KT KeyType, VT any](capacity int) *LRUCache[KT, VT] {
+	return &LRUCache[KT, VT]{
+		capacity: capacity,
+		cache: make(map[KT]*list.Element),
+		list: list.New(),
+	}
+}
+
+func (lru *LRUCache[KT, VT]) Len() int {
+	lru.mu.RLock()
+	defer lru.mu.RUnlock()
+	return lru.list.Len()
+}
+
+func (lru *LRUCache[KT, VT]) Get(key KT) *VT {
+	lru.mu.Lock()
+	defer lru.mu.Unlock()
+	if elem, ok := lru.cache[key]; ok {
+		lru.list.MoveToFront(elem)
+		return elem.Value.(*entry[KT, VT]).value
+	}
+	return nil
+}
+
+func (lru *LRUCache[KT, VT]) Put(key KT, value *VT) {
+	lru.mu.Lock()
+	defer lru.mu.Unlock()	
+	if elem, ok := lru.cache[key]; ok {
+		lru.list.MoveToFront(elem)
+		elem.Value.(*entry[KT, VT]).value = value
+	} else {
+		if lru.list.Len() >= lru.capacity {
+			back := lru.list.Back()
+			delete(lru.cache, back.Value.(*entry[KT, VT]).key)
+			lru.list.Remove(back)
+		}
+
+		newEntry := &entry[KT, VT]{key, value}
+		newElem := lru.list.PushFront(newEntry)
+		lru.cache[key] = newElem
+	}
+}
+
+func (lru *LRUCache[KT, VT]) Delete(key KT) {
+	lru.mu.Lock()
+	defer lru.mu.Unlock()
+	if elem, ok := lru.cache[key]; ok {
+		delete(lru.cache, key)
+		lru.list.Remove(elem)
+	}
+}
+```
