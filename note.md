@@ -9,6 +9,8 @@
 
    ![alt text](img/GMP3.png)
 
+   ![alt text](img/GMP17.jpeg)
+
    > GMP解释(https://hackmd.io/@zhegen/SJxZMkIdc)
    > 
    > go scheduler所采用的调度模型为GMP
@@ -25,13 +27,19 @@
    >
    > P: Processor，是一虚拟处理器，不代表真实的CPU core数量 ，这个数量在程序启动时候就被決定，这个也被代表着在process运行期间，最多同时只有P个goroutine在运行，可以用P來限制process的并发程度。M通常会比P更多一些，比如碰到阻塞的操作，P就会和M分离，如果有很多阻塞任务，M就可能会非常多。
    >
+   > P 通常跟 CPU 核心数一样多，表示当前这个 go 程序可以占用几个 CPU 核心。
+   > 
+   > P 是需要绑定一个实际的 M 才能运行，毕竟系统线程才能真正的在物理 CPU 上执行任务。
+   >
+   > M 通常会比 P 更多一些，比如碰到阻塞的操作，P 就会和 M 分离，如果有很多阻塞任务，M 就可能会非常多。
+   >
    > LRQ: Local Run Queue, 用來放置G，每个P都有自己的LRQ。
    >
    > GRQ: Global Run Queue，也是用來放置G，当有些LRQ满了之后，无法塞进更多G时，就会把G到GRQ里面。
    > 
    > ![alt text](img/GMP4.png)
    > 
-   > M必須先取得一个P后，才能从P的LRQ中取得G來执行，若是LRQ为空，则会从GRQ或是其他P的LRQ拿G來放到本地P的LRQ里面，M拿到G，执行G，执行到某个时间点后，会进行context switch，把G放回LRQ，并从P拿下一个G执行，一直重复上述步骤。
+   > M必须先取得一个P后，才能从P的LRQ中取得G來执行，若是LRQ为空，则会从GRQ或是其他P的LRQ拿G來放到本地P的LRQ里面，M拿到G，执行G，执行到某个时间点后，会进行context switch，把G放回LRQ，并从P拿下一个G执行，一直重复上述步骤。
    >
    > Handover
    > 
@@ -1536,3 +1544,103 @@ func withCancel(parent Context) *cancelCtx {
    ```
    
    - 内部机制
+   > 常规编译 Go 代码，就是编译 + 链接，这两步。CGO编译多了一步，预编译，可以使用`go tool cgo`命令来预编译C代码。
+
+   ![alt text](img/cgo_compile1.jpg)
+   
+   > 总结：
+   > 1. Go=>C/Go=>C=>Go，其实就是system call的调度过程，就是正常的Go调度，GM和P分离，GM完成system call后，会绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
+   > 2. C=>Go，这个比较复杂，c是宿主，go是脚本，c的线程被迫参与了Go的调度，存在可能被挂起。
+   > 
+   > Go=>C
+   >
+   > 1）entersyscall() 将当前的 M 与 P 剥离，防止 C 程序独占 M 时，阻塞 P 的调度。
+   > 
+   > 2）asmcgocall() 将栈切换到 g0 的系统栈，并执行 C 函数调用
+   >
+   > 3）exitsyscall()寻找合适的 P 来运行从 C 函数返回的 Go 程，优先选择调用 C 之前依附的 P，其次选择其他空闲的 P
+
+   ![alt text](img/cgo_compile2.jpg)
+
+   ![alt text](img/cgo_compile3.jpg)
+
+   > C=>Go, go -> C -> go
+   > 
+   > 本来就存在GMP环境，当M中的任务（syscall or C function call）完成后继续运行的，会执行到 exitsyscall。此时会按照这个顺序去执行：绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
+
+   > C=>Go, 原生 C 调用 go(https://uncledou.site/2021/go-cgo/)
+   ```Go
+    package main
+
+    import "C"
+
+    //export AddFromGo
+    func AddFromGo(a int64, b int64) int64 {
+        return a + b
+    }
+
+    func main() {}
+   ```
+   ```SHELL
+   go build -o libgo-hello.dll -buildmode=c-shared hello.go
+   ```
+   ```C
+    #include <stdio.h>
+    #include "libgo-hello.h"
+
+    int main() {
+        long a = 2;
+        long b = 3;
+
+        long r1 = AddFromGo(a, b);
+
+        printf("%ld + %ld = %ld\n", a, b, r1);
+    }
+   ```
+   ```SHELL
+   gcc -g -o hello hello.c -l go-hello -L. "-Wl,-rpath,."
+   ```
+   ```
+   PS C:\Users\Administrator\Desktop\go> .\hello.exe
+   2 + 3 = 5
+   ```
+   > 执行流程
+   > 
+   > 1. main
+   > 2. AddFromGo (libgo-hello.so 导出的函数，将函数参数写入到内存，一个 struct 中)
+   > 3. crosscall2 (准备进入 cgocallback 这个 go 函数，对接两边的 call ABI)
+   > 4. runtime.cgocallback （获取 M 和 P 等等，逻辑比较多）
+   > 5. _cgoexp_51fb23d6311d_AddFromGo (从内存读取参数)
+   > 5. main.AddFromGo
+   >
+   > 如何获取 M 和 P
+   > 
+   > 1. libgo-hello.so 加载的时候，会触发 go runtime 的初始化，创建 M 和 P；是的，除了 c 主程序的线程，还会另外创建一些 go 的 runtime 线程。
+   > 2. AddFromGo 函数中会检查 go runtime 是否已经初始化好了
+   > 3. 执行 main.AddFromGo 的时候，并没有真的切换到新的线程。而是当前线程获取一个伪装的 M，extra M，具体过程这块还没细看。
+   > 
+   > 调度机制
+   > 
+   > 简单情况下，M 和 P 资源都顺利拿到了，这个 c 线程，就可以在 M 绑定的 goroutine 中运行指定的 go 函数了。
+   > 
+   > 更进一步，如果 go 函数很简单，只是简单的做点纯 CPU 计算就结束了，那么这期间则不依赖 go 的调度
+   > 
+   > 有两种情况，会发生调度：
+   >
+   > 1) exitsyscall 获取不到 P(M必须先取得一个P后，才能从P的LRQ中取得G來执行, M一般来说是无限的，P一般来说是有限的)
+   > 
+   > 此时没法继续执行了，只能：
+   > 1. 将当前 extra M 上绑定的 g，放入全局 g 等待队列
+   > 2. 将当前 c 线程挂起，等待 g 被唤起执行
+   > 
+   > 在 g 被唤起执行的时候，因为 g 和 M 是绑定关系：
+   > 1. 执行 g 的那个线程，会挂起，让出 P，唤起等待的 c 线程
+   > 2. c 线程被唤起之后，拿到 P 继续执行
+   >
+   > 2) go 函数执行过程中发生了协程挂起
+   > 
+   > 发生 system call, 当前 g 会挂起，一般p会绑定下一个M，唤醒下一个 g，继续执行。此时c线程就被过挂起了。
+   > 
+   > system call结束以后，绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。c 线程被唤醒后，拿到 P，继续执行。
+
+10. 泛型
