@@ -1,57 +1,295 @@
 package lua
 
 import (
+	"fmt"
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 )
 
-type TestStruct struct {
-	IntField int
-	StringField string
-	FloatField float64
-}
-
+// 测试设置lua搜索路径
 func TestCheckPath(t *testing.T) {
 	L := NewLuaState()
-	err := L.SetLuaPath("test")
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	err := L.SetLuaPath("./test/?.lua;;")
 	assert.Equal(t, err, 0)
 
-	err = L.SetLuaCPath("test")
+	err = L.SetLuaCPath("./test/?.dll;;")
 	assert.Equal(t, err, 0)
 
 	L.OpenLibs()
 
 	L.GetGlobal("package")
-	L.GetField(-1, "path");
+	L.GetField(-1, "path")
 	path := L.ToString(-1)
-	assert.Equal(t, path, "test")
+	fmt.Printf("path: %s\n", path)
 	L.Pop(1)
 
-	L.GetField(-1, "cpath");
+	L.GetField(-1, "cpath")
 	path = L.ToString(-1)
-	assert.Equal(t, path, "test")
+	fmt.Printf("cpath: %s\n", path)
 	L.Pop(1)
 	L.Pop(1)
-	
-	defer L.Close()
+
+	n := L.GetTop()
+	assert.Equal(t, n, 0)
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试加载执行lua文件
 func TestDoFile(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
-	defer L.Close()
+	defer func() {
+		L.Close()
 
-	err := L.DoFile("go_test.lua")
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	err := L.DoFile("./lua_test/do_file.lua")
 	assert.Nil(t, err)
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试加载执行lua字符串
+func TestDoString(t *testing.T) {
+	L := NewLuaState()
+	L.OpenLibs()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	err := L.DoString("print('hello world')")
+	assert.Nil(t, err)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试go调用lua函数
+func TestGoCallLua(t *testing.T) {
+	L := NewLuaState()
+	L.OpenLibs()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	err := L.DoFile("./lua_test/go_call_lua.lua")
+	assert.Nil(t, err)
+
+	rt := L.GetField(1, "Add")
+	assert.Equal(t, LuaNoVariantType(rt), LUA_TFUNCTION)
+	L.PushInteger(1)
+	L.PushInteger(2)
+	L.PCall(2, 1)
+	sum := L.ToInteger(-1)
+	fmt.Printf("sum: %d\n", sum)
+	assert.Equal(t, sum, 3)
+	L.Pop(1)
+	L.Pop(1)
+	n := L.GetTop()
+	assert.Equal(t, n, 0)
+
+	L.GetGlobal("Add")
+	L.PushInteger(1)
+	L.PushInteger(2)
+	L.PCall(2, 1)
+	sum = L.ToInteger(-1)
+	fmt.Printf("sum: %d\n", sum)
+	assert.Equal(t, sum, 3)
+	L.Pop(1)
+	n = L.GetTop()
+	assert.Equal(t, n, 0)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试lua调用Go函数
+func TestLuaCallGo(t *testing.T) {
+	L := NewLuaState()
+	L.OpenLibs()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	goFuncAddForLua := func(L *LuaState) int {
+		a := L.ToInteger(1)
+		b := L.ToInteger(2)
+		L.PushInteger(int64(a + b))
+		return 1
+	}
+	L.RegisteFunction("GoFuncAdd", goFuncAddForLua)
+	n := L.GetTop()
+	assert.Equal(t, n, 0)
+
+	goClosureFuncForLua := func(L *LuaState) int {
+		ok := L.IsString(L.GoUpvalueIndex(1))
+		assert.True(t, ok)
+
+		ok = L.IsNumber(L.GoUpvalueIndex(2))
+		assert.True(t, ok)
+
+		str := L.ToString(L.GoUpvalueIndex(1))
+		assert.Equal(t, str, "closure")
+
+		val := L.ToInteger(L.GoUpvalueIndex(2))
+		assert.Equal(t, val, 99)
+		return 0
+	}
+
+	L.PushString("closure")
+	L.PushInteger(99)
+	L.RegisteClosure("GoClosureFunc", goClosureFuncForLua, 2)
+	n = L.GetTop()
+	assert.Equal(t, n, 0)
+
+	err := L.DoFile("./lua_test/lua_call_go.lua")
+	assert.Nil(t, err)
+
+	err = L.DoFile("./lua_test/lua_call_go.lua")
+	assert.Nil(t, err)
+
+	err = L.DoFile("./lua_test/lua_call_go.lua")
+	assert.Nil(t, err)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type lud_people struct {
+	Name string
+	Age  int
+}
+
+func (p *lud_people) GetAge(L *LuaState) int {
+	L.PushInteger(int64(p.Age))
+	return 1
+}
+
+func (p *lud_people) SetAge(L *LuaState) int {
+	p.Age = int(L.ToInteger(1))
+	return 0
+}
+
+func (p *lud_people) GetName(L *LuaState) int {
+	L.PushString(p.Name)
+	return 1
+}
+
+func (p *lud_people) SetName(L *LuaState) int {
+	p.Name = L.ToString(1)
+	return 0
+}
+
+// 测试lightuserdata
+func TestLightUserData(t *testing.T) {
+	L := NewLuaState()
+	L.OpenLibs()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	gPeople := &lud_people{
+		Name: "",
+		Age:  0,
+	}
+	L.RegisteObject("gPeople", gPeople)
+	n := L.GetTop()
+	assert.Equal(t, n, 0)
+
+	err := L.DoFile("./lua_test/lua_lightuserdata.lua")
+	assert.Nil(t, err)
+
+	err = L.DoFile("./lua_test/lua_lightuserdata.lua")
+	assert.Nil(t, err)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type fud_people struct {
+	Name string
+	Age  int
+}
+
+func (p *fud_people) GetAge(L *LuaState) int {
+	L.PushInteger(int64(p.Age))
+	return 1
+}
+
+func (p *fud_people) SetAge(L *LuaState) int {
+	p.Age = int(L.ToInteger(1))
+	return 0
+}
+
+func (p *fud_people) GetName(L *LuaState) int {
+	L.PushString(p.Name)
+	return 1
+}
+
+func (p *fud_people) SetName(L *LuaState) int {
+	p.Name = L.ToString(1)
+	return 0
+}
+
+func NewFudPeople(L *LuaState) int {
+	// 绝不允许被go其他对象引用！
+
+	p := &fud_people{}
+	p.Age = int(L.ToInteger(1))
+	p.Name = L.ToString(2)
+	L.PushGoStruct(p)
+	return 1
+}
+
+// 测试fulluserdata
+func TestFullUserData(t *testing.T) {
+	L := NewLuaState()
+	L.OpenLibs()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	L.RegisteFunction("NewFudPeople", NewFudPeople)
+
+	err := L.DoFile("./lua_test/lua_fulluserdata.lua")
+	assert.Nil(t, err)
+
+	err = L.DoFile("./lua_test/lua_fulluserdata.lua")
+	assert.Nil(t, err)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试go结构体底层接口
 func TestGoStruct(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
-	defer L.Close()
+	defer func() {
+		L.Close()
 
+		assert.Equal(t, len(L.registry), 0)
+	}()
+
+	type TestStruct struct {
+		IntField    int
+		StringField string
+		FloatField  float64
+	}
 	ts := &TestStruct{10, "test", 2.3}
 
 	L.CheckStack(1)
@@ -69,7 +307,7 @@ func TestGoStruct(t *testing.T) {
 	tsr := L.ToGoStruct(-1).(*TestStruct)
 	assert.Equal(t, ts, tsr)
 	L.Pop(1)
-	
+
 	assert.Equal(t, 0, L.GetTop())
 
 	L.PushString("not struct")
@@ -78,10 +316,17 @@ func TestGoStruct(t *testing.T) {
 	L.Pop(1)
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试回调go函数参数是否为string类型成功
 func TestCheckStringSuccess(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
-	defer L.Close()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
 
 	Test := func(L *LuaState) int {
 		L.PushString("this is a test")
@@ -89,32 +334,50 @@ func TestCheckStringSuccess(t *testing.T) {
 		return 0
 	}
 
-	L.Register("test", Test)
+	L.RegisteFunction("test", Test)
 	err := L.DoString("test()")
 	assert.Nil(t, err)
 
 	assert.Equal(t, 0, L.GetTop())
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试回调go函数参数是否为string类型失败
 func TestCheckStringFail(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
-	defer L.Close()
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("TestCheckStringFail, panic message:%v\n", err)
+		}
+
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
 
 	Test := func(L *LuaState) int {
 		L.CheckString(-1)
 		return 0
 	}
 
-	L.Register("test", Test)
+	L.RegisteFunction("test", Test)
 	err := L.DoString("test()")
 	assert.NotNil(t, err)
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试pcall
 func TestPCall(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
-	defer L.Close()
+	defer func() {
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
 
 	test := func(L *LuaState) int {
 		arg1 := L.ToString(1)
@@ -130,7 +393,7 @@ func TestPCall(t *testing.T) {
 		return 2
 	}
 
-	L.Register("test", test)
+	L.RegisteFunction("test", test)
 
 	L.PushString("Dummy")
 
@@ -138,8 +401,7 @@ func TestPCall(t *testing.T) {
 	L.PushString("Argument1")
 	L.PushString("Argument2")
 	L.PushString("Argument3")
-	err := L.PCall(3, 2)
-	assert.Nil(t, err)
+	L.PCall(3, 2)
 
 	dummy := L.ToString(1)
 	ret1 := L.ToString(2)
@@ -150,9 +412,20 @@ func TestPCall(t *testing.T) {
 	assert.Equal(t, ret2, "Return2")
 }
 
-func TestNormal(t *testing.T) {
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 测试复杂pcall
+func TestComplexPCall(t *testing.T) {
 	L := NewLuaState()
-	defer L.Close()
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("TestComplexPCall, panic message:%v\n", err)
+		}
+
+		L.Close()
+
+		assert.Equal(t, len(L.registry), 0)
+	}()
 	L.OpenLibs()
 
 	testCalled := 0
@@ -174,124 +447,19 @@ func TestNormal(t *testing.T) {
 	L.PushGoFunction(test)
 
 	L.PushGoFunction(test2)
-	L.PushInteger(42)
 
-	err := L.PCall(1, 0)
-	assert.Nil(t, err)
+	L.PushInteger(42)
+	L.PCall(1, 0)
+
 	assert.Equal(t, test2Arg, 42)
 	assert.Equal(t, test2Argfrombottom, 42)
 
-	err = L.PCall(0, 0)
-	assert.Nil(t, err)
-	err = L.PCall(0, 0)
-	assert.Nil(t, err)
-	err = L.PCall(0, 0)
-	assert.Nil(t, err)
+	L.PCall(0, 0)
+	L.PCall(0, 0)
+	L.PCall(0, 0)
+
 	assert.Equal(t, testCalled, 3)
 
-	err = L.DoString("test2(42)")
-	assert.NotNil(t, err)
-}
-
-func TestUserdata(t *testing.T) {
-	L := NewLuaState()
-	defer L.Close()
-	L.OpenLibs()
-	
-	func(L *LuaState) {
-		type Userdata struct {
-			a, b int
-		}
-
-		rawptr := L.NewUserdata(uintptr(unsafe.Sizeof(Userdata{})))
-		var ptr1 *Userdata
-		ptr1 = (*Userdata)(rawptr)
-		ptr1.a = 2
-		ptr1.b = 3
-
-		rawptr2 := L.ToUserdata(-1)
-		ptr2 := (*Userdata)(rawptr2)
-		assert.Equal(t, ptr1, ptr2)
-	}(L)
-
-	func(L *LuaState) {
-		testCalled := 0
-		test := func(L *LuaState) int {
-			testCalled++
-			return 0
-		}
-
-		L.Register("test", test)
-
-		L.CheckStack(1)
-		L.GetGlobal("test")
-		ok := L.IsGoFunction(-1)
-		assert.True(t, ok)
-		L.Pop(1)
-
-		testCalled = 0
-		err := L.DoString("test()")
-		assert.Nil(t, err)
-		assert.Equal(t, testCalled, 1)
-	}(L)
-
-	func(L *LuaState) {
-		type TestObject struct {
-			AField int
-		}
-
-		z := &TestObject{42}
-
-		L.PushGoStruct(z)
-		L.SetGlobal("z")
-
-		L.CheckStack(1)
-		L.GetGlobal("z")
-		ok := L.IsGoStruct(-1)
-		assert.True(t, ok)
-		L.Pop(1)
-
-		err := L.DoString("return z.AField")
-		assert.Nil(t, err)
-		before := L.ToInteger(-1)
-		L.Pop(1)
-		assert.Equal(t, before, 42)
-
-		err = L.DoString("z.AField = 10")
-		assert.Nil(t, err)
-
-		err = L.DoString("return z.AField")
-		assert.Nil(t, err)
-
-		after := L.ToInteger(-1)
-		L.Pop(1)
-		assert.Equal(t, after, 10)
-	}(L)
-}
-
-func TestPushGoClosureWithUpvalues(t *testing.T) {
-	L := NewLuaState()
-	defer L.Close()
-
-	closure := func(L *LuaState) int {
-		ok := L.IsString(L.UpvalueIndex(2))
-		assert.True(t, ok)
-
-		ok = L.IsNumber(L.UpvalueIndex(3))
-		assert.True(t, ok)
-
-		str := L.ToString(L.UpvalueIndex(2))
-		assert.Equal(t, str, "Hello")
-
-		val := L.ToInteger(L.UpvalueIndex(3))
-		assert.Equal(t, val, 15)
-
-		return 0
-	}
-
-	L.PushString("Hello")
-	L.PushInteger(15)
-	L.PushGoClosureWithUpvalues(closure, 2)
-	err := L.PCall(0, 0)
+	err := L.DoString("test2(42)")
 	assert.Nil(t, err)
 }

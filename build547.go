@@ -3,11 +3,16 @@
 package lua
 
 /*
+// 编译选项
 #cgo CFLAGS: -I ${SRCDIR}/glue
+
 #cgo windows,lua547 LDFLAGS:
 #cgo linux,lua547 LDFLAGS: -lm
+
 #cgo windows,lua547 CFLAGS: -I ${SRCDIR}/lua547
 #cgo linux,lua547 CFLAGS: -I ${SRCDIR}/lua547
+
+// lua 5.4.7源码
 #include "lapi.c"
 #include "lapi.h"
 #include "lauxlib.c"

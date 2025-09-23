@@ -5,46 +5,44 @@ package lua
 */
 import "C"
 import (
+	"fmt"
 	"reflect"
 )
 
 // GOFUNCTION回调
+//
 //export goexport_callgofunction
 func goexport_callgofunction(goLuaStateIndex uintptr, fId uint32) int {
 	l := globalLuaStateMgr.getGoLuaState(goLuaStateIndex)
-	if fId < 0 {
-		panic(&WrapError{
-			code: NotFindGoLuaState, 
-			message: "Requested execution of an unknown function", 
-			sliceLuaStackTrace: l.GetLuaStackTrace(),
-		})
-	}
 	f := l.GetRegistryInterface(fId).(LuaGoFunction)
 	return f(l)
 }
 
 // PANIC回调
+//
 //export goexport_panic_msghandler
 func goexport_panic_msghandler(goLuaStateIndex uintptr, szStr *C.char) {
 	l := globalLuaStateMgr.getGoLuaState(goLuaStateIndex)
 	s := C.GoString(szStr)
 
 	panic(&WrapError{
-		code: PureLuaPanic, 
-		message: s, 
+		code:               PureLuaProtectPanic,
+		message:            fmt.Sprintf("goexport_panic_msghandler, protect panic message:%v", s),
 		sliceLuaStackTrace: l.GetLuaStackTrace(),
 	})
 }
 
 // __gc回调
+//
 //export goexport_gchook
 func goexport_gchook(goLuaStateIndex uintptr, id uint32) int {
 	l := globalLuaStateMgr.getGoLuaState(goLuaStateIndex)
-	l.UnregisterInterface(id)
+	l.unRegisteInterface(id)
 	return 0
 }
 
 // __newindex回调
+//
 //export goexport_interface_newindex
 func goexport_interface_newindex(goLuaStateIndex uintptr, iId uint32, szFieldName *C.char) int {
 	l := globalLuaStateMgr.getGoLuaState(goLuaStateIndex)
@@ -57,6 +55,7 @@ func goexport_interface_newindex(goLuaStateIndex uintptr, iId uint32, szFieldNam
 		fval = fval.Elem()
 	}
 
+	// 获取lua栈上第3个参数的类型，即要赋值的值
 	luatype := LuaNoVariantType(C.lua_type(l.ls, 3))
 
 	switch fval.Kind() {
@@ -120,17 +119,39 @@ func goexport_interface_newindex(goLuaStateIndex uintptr, iId uint32, szFieldNam
 		}
 	}
 
-	l.PushString("Unsupported type of field " + fieldName + ": " + fval.Type().String())
+	l.PushString("Unsupported type of field " + fieldName + ": " + fval.Kind().String())
 	return -1
 }
 
+// 工具，go对象函数调用
+func toolObjectFuncCall(L *LuaState) int {
+	iId := uint32(L.ToInteger(L.GoUpvalueIndex(1)))
+	iObject := L.registry[iId]
+	funcName := L.ToString(L.GoUpvalueIndex(2))
+	pointerVal := reflect.ValueOf(iObject)
+	fval := pointerVal.MethodByName(funcName)
+
+	// 调用go函数
+	args := []reflect.Value{reflect.ValueOf(L)}
+	// 返回值
+	rets := fval.Call(args)
+
+	return int(rets[0].Int())
+}
+
 // __index回调
+//
 //export golua_interface_index
 func golua_interface_index(goLuaStateIndex uintptr, iId uint32, szFieldName *C.char) int {
 	l := globalLuaStateMgr.getGoLuaState(goLuaStateIndex)
 	iObject := l.registry[iId]
-	val := reflect.ValueOf(iObject).Elem()
-	fval := val.FieldByName(C.GoString(szFieldName))
+	pointerVal := reflect.ValueOf(iObject)
+	val := pointerVal.Elem()
+	fieldName := C.GoString(szFieldName)
+	fval := val.FieldByName(fieldName)
+	if !fval.IsValid() {
+		fval = pointerVal.MethodByName(fieldName)
+	}
 
 	if fval.Kind() == reflect.Ptr {
 		fval = fval.Elem()
@@ -170,8 +191,15 @@ func golua_interface_index(goLuaStateIndex uintptr, iId uint32, szFieldName *C.c
 	case reflect.Float64:
 		l.PushNumber(fval.Float())
 		return 1
+	case reflect.Func:
+		l.PushInteger(int64(iId))
+		l.PushString(fieldName)
+		l.PushGoClosureWithUpvalues(toolObjectFuncCall, 2)
+		// n := l.GetTop()
+		// _ = n
+		return 1
 	}
 
-	l.PushString("Unsupported type of field: " + fval.Type().String())
+	l.PushString("Unsupported type of field: " + fval.Kind().String())
 	return -1
 }

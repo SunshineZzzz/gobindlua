@@ -1549,7 +1549,7 @@ func withCancel(parent Context) *cancelCtx {
    ![alt text](img/cgo_compile1.jpg)
    
    > 总结：
-   > 1. Go=>C/Go=>C=>Go，其实就是system call的调度过程，就是正常的Go调度，GM和P分离，GM完成system call后，会绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
+   > 1. Go=>C/Go=>C=>Go，其实就是system call的调度过程，需要切换g0栈，剩下就是正常的Go调度，GM和P分离，GM完成system call后，切换回g栈，会绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
    > 2. C=>Go，这个比较复杂，c是宿主，go是脚本，c的线程被迫参与了Go的调度，存在可能被挂起。
    > 
    > Go=>C

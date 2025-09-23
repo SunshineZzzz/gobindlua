@@ -10,30 +10,32 @@ package lua
 #include "glue.h"
 #include "glue.c"
 
+// lua调试信息结构体大小
 static size_t get_sizeof_lua_Debug() {
     return sizeof(lua_Debug);
 }
 
-int upvalueindex(int n)
-{
+// 用于生成上值索引，用来访问当前调用函数cclosure的上值
+int upvalueindex(int n) {
 	return lua_upvalueindex(n);
 }
 
 #define LUA_PATH_VAR "LUA_PATH"
 #define LUA_CPATH_VAR "LUA_CPATH"
 
+// 设置lua环境变量，LUA_PATH/LUA_CPATH
 #ifdef _WIN32
-int setenv_path(const char *value, int) { 
+int setenv_path(const char *value, int) {
 	return _putenv_s(LUA_PATH_VAR, value);
 }
-int setenv_cpath(const char *value, int) { 
+int setenv_cpath(const char *value, int) {
 	return _putenv_s(LUA_CPATH_VAR, value);
 }
 #else
-int setenv_path(const char *value, int overwrite) { 
+int setenv_path(const char *value, int overwrite) {
 	return setenv(LUA_PATH_VAR, value, overwrite);
 }
-int setenv_cpath(const char *value, int overwrite) { 
+int setenv_cpath(const char *value, int overwrite) {
 	return setenv(LUA_CPATH_VAR, value, overwrite);
 }
 #endif
@@ -41,42 +43,54 @@ int setenv_cpath(const char *value, int overwrite) {
 import "C"
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"unsafe"
 )
 
 type (
-	// 用来注册到lua中的go函数
+	// 用来注册到lua中的go函数类型
 	LuaGoFunction func(L *LuaState) int
+	// lua原始类型
 	LuaNoVariantType int
 )
 
+// lua原始类型定义
 const (
-	LUA_TNIL = LuaNoVariantType(C.LUA_TNIL)
-	LUA_TNUMBER = LuaNoVariantType(C.LUA_TNUMBER)
-	LUA_TBOOLEAN = LuaNoVariantType(C.LUA_TBOOLEAN)
-	LUA_TSTRING = LuaNoVariantType(C.LUA_TSTRING)
-	LUA_TTABLE = LuaNoVariantType(C.LUA_TTABLE)
-	LUA_TFUNCTION = LuaNoVariantType(C.LUA_TFUNCTION)
-	LUA_TUSERDATA = LuaNoVariantType(C.LUA_TUSERDATA)
-	LUA_TTHREAD = LuaNoVariantType(C.LUA_TTHREAD)
+	LUA_TNIL           = LuaNoVariantType(C.LUA_TNIL)
+	LUA_TNUMBER        = LuaNoVariantType(C.LUA_TNUMBER)
+	LUA_TBOOLEAN       = LuaNoVariantType(C.LUA_TBOOLEAN)
+	LUA_TSTRING        = LuaNoVariantType(C.LUA_TSTRING)
+	LUA_TTABLE         = LuaNoVariantType(C.LUA_TTABLE)
+	LUA_TFUNCTION      = LuaNoVariantType(C.LUA_TFUNCTION)
+	LUA_TUSERDATA      = LuaNoVariantType(C.LUA_TUSERDATA)
+	LUA_TTHREAD        = LuaNoVariantType(C.LUA_TTHREAD)
 	LUA_TLIGHTUSERDATA = LuaNoVariantType(C.LUA_TLIGHTUSERDATA)
 )
 
+// lua常量定义
 const (
+	// 调用一个(c/lua)函数期望的返回值，有多少返回值就返回多少返回值
 	LUA_MULTRET = C.LUA_MULTRET
+	// lua调用成功
+	LUA_OK = C.LUA_OK
 )
 
+// 错误码定义
 const (
-	NotFindGoLuaState = iota
-	PureLuaPanic
+	// lua中保护模式下出现panic
+	PureLuaProtectPanic = iota
+	// lua错误
 	PureLuaError
+	// lua栈元素数量错误
 	PureLuaStackElemNumErr
+	// pcall调用失败
+	PCallLuaRstError
 )
 
 var (
-	// 全局管理
-	globalLuaStateMgr *LuaStateMgr = nil 
+	// 全局lua管理
+	globalLuaStateMgr *LuaStateMgr = nil
 )
 
 func init() {
@@ -85,10 +99,13 @@ func init() {
 	}
 }
 
-// 错误
+// 错误包装
 type WrapError struct {
+	// 错误码
 	code int
+	// 错误描述
 	message string
+	// lua堆栈描述
 	sliceLuaStackTrace []LuaStackTrace
 }
 
@@ -111,33 +128,39 @@ func (werr *WrapError) GetLuaStackTrace() []LuaStackTrace {
 
 // lua调用栈信息
 type LuaStackTrace struct {
+	// 当前函数或变量的名称
 	Name string
+	// 当前函数的源代码文件名或源代码内容
 	Source string
+	// 当前函数的简短源代码信息
 	ShortSource string
+	// 当前正在执行的代码行号
 	CurrentLine int
 }
 
 // lua_State管理器
 type LuaStateMgr struct {
+	// 保护下面
 	sync.RWMutex
+	// lua状态机地址 <-> lua状态机
 	lusStates map[uintptr]*LuaState
 }
 
 // 全局注册LuaState
-func (lsm *LuaStateMgr) registerLuaState(ls* LuaState) {
+func (lsm *LuaStateMgr) registeLuaState(ls *LuaState) {
 	lsm.Lock()
 	defer lsm.Unlock()
 
-	ls.IdxPtr = uintptr(unsafe.Pointer(ls))
-	lsm.lusStates[ls.IdxPtr] = ls
+	ls.idxPtr = uintptr(unsafe.Pointer(ls))
+	lsm.lusStates[ls.idxPtr] = ls
 }
 
 // 全局注销LuaState
-func (lsm *LuaStateMgr) unregisterLusState(ls* LuaState) {
+func (lsm *LuaStateMgr) unRegisteLusState(ls *LuaState) {
 	lsm.Lock()
 	defer lsm.Unlock()
 
-	delete(lsm.lusStates, ls.IdxPtr)
+	delete(lsm.lusStates, ls.idxPtr)
 }
 
 // 根据index获取LuaState
@@ -158,11 +181,17 @@ func (lsm *LuaStateMgr) Count() int {
 
 // lua_State封装
 type LuaState struct {
+	// lua状态机
 	ls *C.lua_State
-	IdxPtr uintptr
+	// 全局中map的key
+	idxPtr uintptr
+	// 下一个registry索引
 	nextIndex uint32
+	// 对象记录表
 	registry map[uint32]any
+	//
 	cTmpSize *C.size_t
+	// 是否lua加载标准库
 	isOpenLibs bool
 }
 
@@ -174,21 +203,24 @@ func NewLuaState() *LuaState {
 	}
 
 	newLuaState := &LuaState{
-		ls: ls,
-		IdxPtr: 0,
-		nextIndex: 0,
-		registry: make(map[uint32]any),
-		cTmpSize: (*C.size_t)(C.malloc(C.size_t(unsafe.Sizeof(uint(0))))),
+		ls:         ls,
+		idxPtr:     0,
+		nextIndex:  0,
+		registry:   make(map[uint32]any),
+		cTmpSize:   (*C.size_t)(C.malloc(C.size_t(unsafe.Sizeof(uint(0))))),
 		isOpenLibs: false,
 	}
-	globalLuaStateMgr.registerLuaState(newLuaState)
-	C.glue_setgoluastate(ls, C.size_t(newLuaState.IdxPtr))
+	// 全局注册
+	globalLuaStateMgr.registeLuaState(newLuaState)
+	// 设置lua无保护模式下出现错误时的处理方法 & Go.LuaState地址注册到lua全局表
+	C.glue_setgoluastate(ls, C.size_t(newLuaState.idxPtr))
+	// 注册一些元表和保护模式下错误处理函数到lua中，胶水层，作为lua和go交互的桥梁
 	C.glue_initluastate(ls)
 
 	return newLuaState
 }
 
-// 获取当前lua调用栈的驿站信息
+// 获取当前lua调用栈的堆栈信息，TODO:这里后续可以优化，减少内存分配
 func (l *LuaState) GetLuaStackTrace() []LuaStackTrace {
 	r := make([]LuaStackTrace, 0, 1)
 	d := (*C.lua_Debug)(C.malloc(C.get_sizeof_lua_Debug()))
@@ -209,9 +241,9 @@ func (l *LuaState) GetLuaStackTrace() []LuaStackTrace {
 		}
 		ss := string(ssb)
 		r = append(r, LuaStackTrace{
-			Name: C.GoString(d.name), 
-			Source: C.GoString(d.source), 
-			ShortSource: ss, 
+			Name:        C.GoString(d.name),
+			Source:      C.GoString(d.source),
+			ShortSource: ss,
 			CurrentLine: int(d.currentline),
 		})
 	}
@@ -223,13 +255,13 @@ func (l *LuaState) GetLuaStackTrace() []LuaStackTrace {
 func (l *LuaState) GetRegistryInterface(id uint32) any {
 	i, ok := l.registry[id]
 	if !ok {
-		return i
+		return nil
 	}
 	return i
 }
 
 // 对象注册
-func (l *LuaState) RegisterInterface(f any) uint32 {
+func (l *LuaState) registeInterface(f any) uint32 {
 	index := l.nextIndex
 	l.nextIndex++
 	l.registry[index] = f
@@ -237,7 +269,7 @@ func (l *LuaState) RegisterInterface(f any) uint32 {
 }
 
 // 根据id注销
-func (l *LuaState) UnregisterInterface(id uint32) {
+func (l *LuaState) unRegisteInterface(id uint32) {
 	delete(l.registry, id)
 }
 
@@ -248,7 +280,7 @@ func (l *LuaState) GetRegistryNum() int {
 
 // GOFUNCTION压入lua栈中
 func (l *LuaState) PushGoFunction(f LuaGoFunction) {
-	fid := l.RegisterInterface(f)
+	fid := l.registeInterface(f)
 	C.glue_pushgofunction(l.ls, C.uint(fid))
 }
 
@@ -262,7 +294,11 @@ func (l *LuaState) PushString(str string) {
 // 布尔值压入lua栈
 func (l *LuaState) PushBoolean(b bool) {
 	var bint int
-	if b { bint = 1 } else { bint = 0 }
+	if b {
+		bint = 1
+	} else {
+		bint = 0
+	}
 	C.lua_pushboolean(l.ls, C.int(bint))
 }
 
@@ -281,25 +317,29 @@ func (l *LuaState) PushNumber(n float64) {
 	C.lua_pushnumber(l.ls, C.lua_Number(n))
 }
 
-// 无上值GOCLOSURE压入lua栈
-func (l *LuaState) PushGoClosure(f LuaGoFunction) {
-	l.PushGoFunction(f)
-	C.glue_pushgoclosure(l.ls, 0)
+// idx到栈顶的段进行旋转(循环移位)，段看成一个环，n是正数，顺时针n个位置，n是负数，逆时针旋转|n|个位置
+// 比如：
+// 栈低[1,2,3,4,5]栈顶，idx=1，n=2，顺时针旋转后，栈低[4,5,1,2,3]栈顶
+// 栈低[1,2,3,4,5]栈顶，idx=1，n=-2，逆时针旋转后，栈低[3,4,5,1,2]栈顶
+// 栈低[1,2,3,4,5]栈顶，idx=-4，n=-1，逆时针旋转后，栈低[1,3,4,5,2]栈顶
+func (l *LuaState) Rotate(idx int, n int) {
+	C.lua_rotate(l.ls, C.int(idx), C.int(n))
 }
 
-// 多个上值GOCLOSURE压入lua栈
+// 将一个新的Go闭包压入栈中
 func (l *LuaState) PushGoClosureWithUpvalues(f LuaGoFunction, nup uint) {
 	l.PushGoFunction(f)
 	nums := uint(C.lua_gettop(l.ls))
-	if nums < (nup+1) {
+	if nums < (nup + 1) {
 		panic(&WrapError{
-			code: PureLuaStackElemNumErr, 
-			message: fmt.Sprintf("Pure lua stack element num error,nums:%v,nup:%v", nums, (nup+1)), 
+			code:               PureLuaStackElemNumErr,
+			message:            fmt.Sprintf("PushGoClosureWithUpvalues, pure lua stack element num error,%v,%v", nums, (nup + 1)),
 			sliceLuaStackTrace: l.GetLuaStackTrace(),
 		})
 	}
 	if nup > 0 {
-		C.lua_rotate(l.ls, C.int(-int(nup)-1), 1)
+		// goclosure, up1, up2, ..., upn，栈顶方向
+		l.Rotate(-int(nup)-1, 1)
 	}
 	C.glue_pushgoclosure(l.ls, C.int(nup))
 }
@@ -353,7 +393,7 @@ func (l *LuaState) Close() {
 	}()
 
 	C.lua_close(l.ls)
-	globalLuaStateMgr.unregisterLusState(l)
+	globalLuaStateMgr.unRegisteLusState(l)
 }
 
 // 确保lua栈可以容纳n个元素
@@ -363,7 +403,11 @@ func (l *LuaState) CheckStack(n int) bool {
 
 // GOSTRUCT压入lua栈
 func (l *LuaState) PushGoStruct(obj any) {
-	iId := l.RegisterInterface(obj)
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr {
+		panic("obj must be a pointer to a Go struct")
+	}
+	iId := l.registeInterface(obj)
 	C.glue_pushgointerface(l.ls, C.uint(iId))
 }
 
@@ -383,7 +427,7 @@ func (l *LuaState) GetGlobal(name string) {
 }
 
 // 指定idx获取GOSTRUCT
-func (l *LuaState) ToGoStruct(index int) (f interface{}) {
+func (l *LuaState) ToGoStruct(index int) any {
 	if !l.IsGoStruct(index) {
 		return nil
 	}
@@ -420,18 +464,18 @@ func (l *LuaState) IsFullUserdata(idx int) bool {
 }
 
 // idx是否是number
-func (l *LuaState) IsNumber(idx int) bool { 
-	return C.lua_isnumber(l.ls, C.int(idx)) == 1 
+func (l *LuaState) IsNumber(idx int) bool {
+	return C.lua_isnumber(l.ls, C.int(idx)) == 1
 }
 
 // idx是否是integer
-func (l *LuaState) IsInteger(idx int) bool { 
-	return C.lua_isinteger(l.ls, C.int(idx)) == 1 
+func (l *LuaState) IsInteger(idx int) bool {
+	return C.lua_isinteger(l.ls, C.int(idx)) == 1
 }
 
 // idx是否是string
-func (l *LuaState) IsString(idx int) bool { 
-	return C.lua_isstring(l.ls, C.int(idx)) == 1 
+func (l *LuaState) IsString(idx int) bool {
+	return C.lua_isstring(l.ls, C.int(idx)) == 1
 }
 
 // idx是否是table
@@ -445,13 +489,31 @@ func (l *LuaState) Pop(n int) {
 }
 
 // 返回栈顶元素的索引，因为索引从1开始，所以这个结果等于栈中元素的数量
-func (l *LuaState) GetTop() int { 
-	return int(C.lua_gettop(l.ls)) 
+func (l *LuaState) GetTop() int {
+	return int(C.lua_gettop(l.ls))
 }
 
 // 注册函数到全局
-func (l *LuaState) Register(name string, f LuaGoFunction) {
+func (l *LuaState) RegisteFunction(name string, f LuaGoFunction) {
 	l.PushGoFunction(f)
+	// 上面函数会生成full user data胶水对象，将其注册到全局表中，防止被GC
+	l.SetGlobal(name)
+}
+
+// 注册闭包函数到全局
+func (l *LuaState) RegisteClosure(name string, f LuaGoFunction, nup uint) {
+	l.PushGoClosureWithUpvalues(f, nup)
+	// 上面函数会生成full user data胶水对象，将其注册到全局表中，防止被GC
+	l.SetGlobal(name)
+}
+
+// 注册对象到全局
+func (l *LuaState) RegisteObject(name string, obj any) {
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr {
+		panic("obj must be a pointer to a Go struct")
+	}
+	l.PushGoStruct(obj)
 	l.SetGlobal(name)
 }
 
@@ -469,47 +531,58 @@ func (l *LuaState) LoadString(s string) int {
 }
 
 // 在保护模式下调用一个函数
+// nargs传递给被调用函数的参数个数
+// nresults预期返回的结果数量，如果为LUA_MULTRET，表示返回所有结果
+// errfunc错误处理函数的栈索引（如果为0，则没有错误处理函数）
+// 返回值
 func (l *LuaState) pcall(nargs, nresults, errfunc int) int {
 	return int(C.lua_pcallk(l.ls, C.int(nargs), C.int(nresults), C.int(errfunc), 0, nil))
 }
 
 // 将栈顶元素插入到指定索引idx的位置，并将原来从idx开始的所有元素向栈顶方向移动一个位置
-func (l *LuaState) Insert(index int) { 
-	C.lua_rotate(l.ls, C.int(index), 1)
+func (l *LuaState) Insert(index int) {
+	l.Rotate(index, 1)
 }
 
 // 从指定索引处移除一个元素，把这个索引之上的所有元素移下来填补上这个空隙
 func (l *LuaState) Remove(index int) {
-	C.lua_rotate(l.ls, C.int(index), -1)
+	l.Rotate(index, -1)
 	l.Pop(1)
 }
 
 // 在保护模式下调用一个函数
-func (l *LuaState) PCall(nargs, nresults int) (err error) {
+// nargs传递给被调用函数的参数个数
+// nresults预期返回的结果数量，如果为LUA_MULTRET，表示返回所有结果
+func (l *LuaState) PCall(nargs, nresults int) {
 	defer func() {
-		if callErr := recover(); callErr != nil {
-			err = callErr.(error)
+		if err := recover(); err != nil {
+			// 如果异常处理函数设置没问题，会走这里
+			// 回调go函数发生异常，会走这里
+			panic(err)
 		}
 	}()
 
 	l.GetGlobal(C.GOLUA_DEFAULT_MSGHANDLER)
 	errIdx := l.GetTop() - nargs - 1
+	// 异常处理函数放到下面
 	l.Insert(errIdx)
+	// 这样子lua出现异常，就不会直接崩溃，而是会调用异常处理函数
 	r := l.pcall(nargs, nresults, errIdx)
 	l.Remove(errIdx)
-	if r != 0 {
-		err = &WrapError{r, l.ToString(-1), l.GetLuaStackTrace()}
+	if r != LUA_OK {
+		// 有可能把栈写坏了，上面设置的异常处理函数失效了，就会走这里
+		err := &WrapError{PCallLuaRstError, l.ToString(-1), l.GetLuaStackTrace()}
 		panic(err)
 	}
-	return
 }
 
 // 加载lua代码块并且执行
 func (l *LuaState) DoString(str string) error {
-	if r := l.LoadString(str); r != 0 {
+	if r := l.LoadString(str); r != LUA_OK {
 		return &WrapError{PureLuaError, l.ToString(-1), l.GetLuaStackTrace()}
 	}
-	return l.PCall(0, LUA_MULTRET)
+	l.PCall(0, LUA_MULTRET)
+	return nil
 }
 
 // 将一个文件加载为Lua代码块
@@ -520,11 +593,12 @@ func (l *LuaState) LoadFile(filename string) int {
 }
 
 // 加载并执行一个Lua脚本文件
-func (l *LuaState) DoFile(fileName string) error { 
-	if r := l.LoadFile(fileName); r != 0 {
+func (l *LuaState) DoFile(fileName string) error {
+	if r := l.LoadFile(fileName); r != LUA_OK {
 		return &WrapError{PureLuaError, l.ToString(-1), l.GetLuaStackTrace()}
 	}
-	return l.PCall(0, LUA_MULTRET)
+	l.PCall(0, LUA_MULTRET)
+	return nil
 }
 
 // 用于检查idx栈中指定位置的参数是否存在（即不为LUA_TNONE），如果参数不存在，抛出一个错误，提示用户需要一个值
@@ -552,23 +626,6 @@ func (l *LuaState) CheckType(idx int, t LuaNoVariantType) {
 	C.luaL_checktype(l.ls, C.int(idx), C.int(t))
 }
 
-// 用于检查ud栈中指定位置的参数是否是一个特定元表tname的userdata，并返回该userdata的指针，如果参数不是userdata或类型不匹配，则会抛出错误
-func (l *LuaState) CheckUdata(idx int, tname string) unsafe.Pointer {
-	szName := C.CString(tname)
-	defer C.free(unsafe.Pointer(szName))
-	return unsafe.Pointer(C.luaL_checkudata(l.ls, C.int(idx), szName))
-}
-
-// 创建一个指定大小userdata，并为其分配一个upvalue，在栈顶
-func (l *LuaState) NewUserdata(size uintptr) unsafe.Pointer {
-	return unsafe.Pointer(C.lua_newuserdatauv(l.ls, C.size_t(size), 1))
-}
-
-// 从栈中idx获取用户数据
-func (l *LuaState) ToUserdata(idx int) unsafe.Pointer {
-	return unsafe.Pointer(C.lua_touserdata(l.ls, C.int(idx)))
-}
-
 // 判断idx栈中指定位置的参数是否是Go函数
 func (l *LuaState) IsGoFunction(idx int) bool {
 	return C.glue_isgofunction(l.ls, C.int(idx)) != 0
@@ -587,4 +644,9 @@ func (l *LuaState) ToNumber(idx int) float64 {
 // 用于生成上值索引
 func (l *LuaState) UpvalueIndex(n int) int {
 	return int(C.upvalueindex(C.int(n)))
+}
+
+// 用于生成Go闭包的上值索引，目的是模拟cclosure
+func (l *LuaState) GoUpvalueIndex(n int) int {
+	return l.UpvalueIndex(n + 1)
 }
