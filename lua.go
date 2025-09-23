@@ -189,7 +189,7 @@ type LuaState struct {
 	nextIndex uint32
 	// 对象记录表
 	registry map[uint32]any
-	//
+	// 临时变量，用于存储c字符串长度
 	cTmpSize *C.size_t
 	// 是否lua加载标准库
 	isOpenLibs bool
