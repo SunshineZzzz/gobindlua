@@ -10,6 +10,9 @@
 	- [go对象(full user data)注册到lua，该对象不应该被go逻辑引用，生命周期由lua逻辑控制](#go对象full-user-data注册到lua该对象不应该被go逻辑引用生命周期由lua逻辑控制)
 	- [简单热更](#简单热更)
 - [如何调试](#如何调试)
+	- [windows](#windows)
+	- [linux](#linux)
+- [TODO](#todo)
 
 ### 环境需求
 
@@ -24,6 +27,17 @@ go get github.com/SunshineZzzz/gobindlua
 ```go
 import "github.com/SunshineZzzz/gobindlua"
 ```
+
+windows:
+```bash
+$env:CGO_ENABLED=1; $env:CGO_CFLAGS='-O2 -g'; go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o main.exe .
+```
+
+linux:
+```bash
+CGO_ENABLED=1 CGO_CFLAGS='-O2 -g' go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o main .
+```
+
 
 ### 示例
 
@@ -365,5 +379,210 @@ func main() {
 ```
 
 #### 简单热更
+```lua
+function Add(a, b)
+    return a + b + 2
+end
+```
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	lua "github.com/SunshineZzzz/gobindlua"
+)
+
+func watchFile(filePath string, interval time.Duration, inCh chan<- struct{}) {
+	var lastModTime time.Time
+
+	fmt.Printf("Started watching file: %s with an interval of %s\n", filePath, interval)
+
+	for {
+		fileInfo, err := os.Stat(filePath)
+		if err != nil {
+			log.Printf("Error getting file info: %v\n", err)
+			lastModTime = time.Time{}
+		} else {
+			currentModTime := fileInfo.ModTime()
+
+			if currentModTime.After(lastModTime) {
+				if !lastModTime.IsZero() {
+					inCh <- struct{}{}
+				}
+				lastModTime = currentModTime
+			}
+		}
+
+		time.Sleep(interval)
+	}
+
+}
+
+func main() {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("do file exception err: %v\n", err)
+		}
+	}()
+
+	L := lua.NewLuaState()
+	L.OpenLibs()
+	defer L.Close()
+
+	err := L.DoFile("mod.lua")
+	if err != nil {
+		fmt.Printf("Initial do file err: %v\n", err)
+		return
+	}
+	fmt.Println("Initial mod.lua loaded.")
+
+	ch := make(chan struct{}, 1)
+	go watchFile("mod.lua", time.Second, ch)
+
+	for true {
+		select {
+		case <-ch:
+			fmt.Println("\nmod.lua modified, beginning hot-reload...")
+			err := L.DoFile("mod.lua")
+			if err != nil {
+				fmt.Printf("do file err: %v\n", err)
+			}
+			fmt.Println("mod.lua hot-reload complete.")
+		case <-time.After(time.Second):
+			L.GetGlobal("Add")
+			L.PushInteger(1)
+			L.PushInteger(2)
+			L.PCall(2, 1)
+			sum := L.ToInteger(-1)
+			fmt.Printf("Lua function '_G.Add' returned: %v\n", sum)
+			L.Pop(1)
+		}
+	}
+}
+```
+
+```bash
+>$env:CGO_ENABLED=1; $env:CGO_CFLAGS='-O2 -g'; go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o main.exe .
+>.\main.exe
+Initial mod.lua loaded.
+Started watching file: mod.lua with an interval of 1s
+Lua function '_G.Add' returned: 4
+Lua function '_G.Add' returned: 4
+
+
+mod.lua modified, beginning hot-reload...
+mod.lua hot-reload complete.
+Lua function '_G.Add' returned: 5
+Lua function '_G.Add' returned: 5
+```
+
+运行时手动修改mod.lua文件，热更生效
+```lua
+function Add(a, b)
+    return a + b + 2
+end
+```
 
 ### 如何调试
+
+#### windows
+1. 安装vscode插件：`GDB Debugger - Beyond`
+2. 配置launch.json
+```json
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "debug dlv cgo",
+			"type": "go",
+			"request": "launch",
+			"mode": "debug",
+			"program": "${fileDirname}",
+			"env": {
+				"CGO_ENABLED": "1",
+				"CC": "gcc",
+				"CGO_CFLAGS": "-O2 -g"
+			},
+			"buildFlags": "-tags=lua547",
+			"args": []
+		},
+		{
+			"name": "debug gdb cgo",
+			"type": "by-gdb",
+			"request": "launch",
+			"program": "${fileDirname}/gdbGoDebug.exe",
+			"cwd": "${fileDirname}",
+			"preLaunchTask": "build cgo debug",
+			"postDebugTask": "clean cgo debug",
+		},
+		{
+			"name": "test dlv cgo",
+			"type": "go",
+			"request": "launch",
+			"mode": "test",
+			"program": "${fileDirname}",
+			"env": {
+				"CGO_ENABLED": "1",
+				"CC": "gcc",
+				"CGO_CFLAGS": "-O0 -g"
+			},
+			"buildFlags": "-tags=lua547",
+			"args": []
+		},
+		{
+			"name": "test gdb cgo",
+			"type": "by-gdb",
+			"request": "launch",
+			"program": "gdbGoTest.exe",
+			"cwd": "${fileDirname}",
+			"preLaunchTask": "build cgo test",
+			"postDebugTask": "clean cgo test"
+		},
+	]
+}
+```
+3. 配置task.json
+```json
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "build cgo test",
+			"command": "$env:CGO_ENABLED=1; $env:CGO_CFLAGS='-O0 -g'; go test -gcflags=all='-N -l' -tags=lua547 -c -o gdbGoTest.exe .",
+		},
+		{
+			"type": "shell",
+			"label": "clean cgo test",
+			"command": "del gdbGoTest.exe"
+		},
+		{
+			"type": "shell",
+			"label": "build cgo debug",
+			"command": "cd ${fileDirname}; $env:CGO_ENABLED=1; $env:CGO_CFLAGS='-O0 -g'; go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o gdbGoDebug.exe .",
+		},
+		{
+			"type": "shell",
+			"label": "clean cgo debug",
+			"command": "cd ${fileDirname}; del gdbGoDebug.exe"
+		}
+	]
+}
+```
+
+#### linux
+```bash
+CGO_ENABLED=1 CGO_CFLAGS='-O0 -g' go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o main .
+
+gdb ./main
+```
+
+
+### TODO
+1. benchmark
+2. 性能优化
+3. linux需要测试一下
