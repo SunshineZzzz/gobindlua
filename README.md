@@ -162,7 +162,7 @@ func main() {
 	L.PCall(2, 1)
 	sum = L.ToInteger(-1)
 	fmt.Printf("_G.Add = : %v\n", sum)
-	L.Pop(2)
+	L.Pop(1)
 }
 ```
 
@@ -385,11 +385,13 @@ func main() {
 
 #### 简单热更
 ```lua
+-- lua
 function Add(a, b)
     return a + b + 2
 end
 ```
 ```go
+// go
 package main
 
 import (

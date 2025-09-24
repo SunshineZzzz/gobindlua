@@ -37,5 +37,5 @@ func main() {
 	L.PCall(2, 1)
 	sum = L.ToInteger(-1)
 	fmt.Printf("_G.Add = : %v\n", sum)
-	L.Pop(2)
+	L.Pop(1)
 }
