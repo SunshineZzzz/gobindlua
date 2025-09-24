@@ -95,8 +95,7 @@ func TestGoCallLua(t *testing.T) {
 	sum := L.ToInteger(-1)
 	fmt.Printf("sum: %d\n", sum)
 	assert.Equal(t, sum, 3)
-	L.Pop(1)
-	L.Pop(1)
+	L.Pop(2)
 	n := L.GetTop()
 	assert.Equal(t, n, 0)
 

@@ -10,6 +10,16 @@
 			"type": "shell",
 			"label": "clean cgo test",
 			"command": "del gdbGoTest.exe"
+		},
+		{
+			"type": "shell",
+			"label": "build cgo debug",
+			"command": "cd ${fileDirname}; $env:CGO_ENABLED=1; $env:CGO_CFLAGS='-O0 -g'; go build -gcflags=all='-N -l' -ldflags='-s=false' -tags=lua547 -o gdbGoDebug.exe .",
+		},
+		{
+			"type": "shell",
+			"label": "clean cgo debug",
+			"command": "cd ${fileDirname}; del gdbGoDebug.exe"
 		}
 	]
 }

@@ -17,9 +17,9 @@ func main() {
 	L.OpenLibs()
 	defer L.Close()
 
-	err := L.DoFile("hello.lua")
+	err := L.DoString("print('hello world')")
 	if err != nil {
-		fmt.Printf("do file err: %v\n", err.Error())
+		fmt.Printf("do string err: %v\n", err)
 		return
 	}
 }
