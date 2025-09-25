@@ -347,10 +347,6 @@ func TestCheckStringFail(t *testing.T) {
 	L := NewLuaState()
 	L.OpenLibs()
 	defer func() {
-		if err := recover(); err != nil {
-			fmt.Printf("TestCheckStringFail, panic message:%v\n", err)
-		}
-
 		L.Close()
 
 		assert.Equal(t, len(L.registry), 0)
@@ -364,6 +360,7 @@ func TestCheckStringFail(t *testing.T) {
 	L.RegisteFunction("test", Test)
 	err := L.DoString("test()")
 	assert.NotNil(t, err)
+	fmt.Println(err.Error())
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -417,10 +414,6 @@ func TestPCall(t *testing.T) {
 func TestComplexPCall(t *testing.T) {
 	L := NewLuaState()
 	defer func() {
-		if err := recover(); err != nil {
-			fmt.Printf("TestComplexPCall, panic message:%v\n", err)
-		}
-
 		L.Close()
 
 		assert.Equal(t, len(L.registry), 0)
@@ -460,5 +453,6 @@ func TestComplexPCall(t *testing.T) {
 	assert.Equal(t, testCalled, 3)
 
 	err := L.DoString("test2(42)")
-	assert.Nil(t, err)
+	assert.NotNil(t, err)
+	fmt.Println(err.Error())
 }

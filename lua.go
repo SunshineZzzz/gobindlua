@@ -86,6 +86,8 @@ const (
 	PureLuaStackElemNumErr
 	// pcall调用失败
 	PCallLuaRstError
+	// pcall调用go逻辑异常
+	PCallGoLogicExceptionErr
 )
 
 var (
@@ -553,12 +555,17 @@ func (l *LuaState) Remove(index int) {
 // 在保护模式下调用一个函数
 // nargs传递给被调用函数的参数个数
 // nresults预期返回的结果数量，如果为LUA_MULTRET，表示返回所有结果
-func (l *LuaState) PCall(nargs, nresults int) {
+func (l *LuaState) PCall(nargs, nresults int) (err error) {
 	defer func() {
-		if err := recover(); err != nil {
-			// 如果异常处理函数设置没问题，会走这里
-			// 回调go函数发生异常，会走这里
-			panic(err)
+		if r := recover(); r != nil {
+			switch r.(type) {
+			case *WrapError:
+				// 如果异常处理函数设置没问题，会走这里
+				err = r.(*WrapError)
+			default:
+				// 回调go函数发生异常，会走这里
+				err = &WrapError{PCallGoLogicExceptionErr, r.(error).Error(), l.GetLuaStackTrace()}
+			}
 		}
 	}()
 
@@ -570,10 +577,9 @@ func (l *LuaState) PCall(nargs, nresults int) {
 	r := l.pcall(nargs, nresults, errIdx)
 	l.Remove(errIdx)
 	if r != LUA_OK {
-		// 有可能把栈写坏了，上面设置的异常处理函数失效了，就会走这里
-		err := &WrapError{PCallLuaRstError, l.ToString(-1), l.GetLuaStackTrace()}
-		panic(err)
+		return &WrapError{PCallLuaRstError, l.ToString(-1), l.GetLuaStackTrace()}
 	}
+	return nil
 }
 
 // 加载lua代码块并且执行
@@ -581,8 +587,7 @@ func (l *LuaState) DoString(str string) error {
 	if r := l.LoadString(str); r != LUA_OK {
 		return &WrapError{PureLuaError, l.ToString(-1), l.GetLuaStackTrace()}
 	}
-	l.PCall(0, LUA_MULTRET)
-	return nil
+	return l.PCall(0, LUA_MULTRET)
 }
 
 // 将一个文件加载为Lua代码块
@@ -597,8 +602,7 @@ func (l *LuaState) DoFile(fileName string) error {
 	if r := l.LoadFile(fileName); r != LUA_OK {
 		return &WrapError{PureLuaError, l.ToString(-1), l.GetLuaStackTrace()}
 	}
-	l.PCall(0, LUA_MULTRET)
-	return nil
+	return l.PCall(0, LUA_MULTRET)
 }
 
 // 用于检查idx栈中指定位置的参数是否存在（即不为LUA_TNONE），如果参数不存在，抛出一个错误，提示用户需要一个值
