@@ -19,6 +19,7 @@ func main() {
 
 	count := 0
 	GoFuncAdd := func(L *lua.LuaState) int {
+		panic("123")
 		count++
 		a := L.ToInteger(1)
 		b := L.ToInteger(2)

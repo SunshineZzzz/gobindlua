@@ -1,4 +1,15 @@
-1. GMP
+- [GMP](#gmp)
+- [GOPATH](#gopath)
+- [go interface底层，Go版本是1.25.1](#go-interface底层go版本是1251)
+- [反射底层，Go版本是1.25.1](#反射底层go版本是1251)
+- [底层数据类型，Go版本是1.25.1](#底层数据类型go版本是1251)
+- [Go并发哲学](#go并发哲学)
+- [context](#context)
+- [CGO](#cgo)
+- [泛型(https://segmentfault.com/a/1190000041634906)](#泛型httpssegmentfaultcoma1190000041634906)
+- [slog](#slog)
+
+#### GMP
    - M:N模型
    
    ![alt text](img/GMP1.png)
@@ -89,7 +100,7 @@
   
    ![alt text](img/GMP16.png)
 
-2. GOPATH
+#### GOPATH
 > 可以理解为工作目录，该目录下一般包含以下几个子目录：
 > 
 > - src：存放项目的Go代码
@@ -131,7 +142,7 @@
 >
 > 每一行都是由```模块路径```，```模块版本```，```哈希检验值```组成，其中```哈希检验值```是用来保证当前缓存的模块不会被篡改。
 
-1. go interface底层，Go版本是1.25.1
+#### go interface底层，Go版本是1.25.1
 ```GO
 type _type = abi.Type
 // 非空接口，带有方法的interface
@@ -424,7 +435,7 @@ go tool objdump -s "main\.main" tmp
   main.go:25            0x14009ef64             4889542430                      MOVQ DX, 0x30(SP)
 ```
 
-5. 反射底层，Go版本是1.25.1
+#### 反射底层，Go版本是1.25.1
    - reflect.TypeOf() 底层实现
     ```Go
     // TypeOf returns the abi.Type of some value.
@@ -561,7 +572,7 @@ go tool objdump -s "main\.main" tmp
   
     ![alt text](img/reflect4.png)
 
-6. 底层数据类型，Go版本是1.25.1
+#### 底层数据类型，Go版本是1.25.1
 ```Go
 // Slice is the runtime representation of a slice.
 // It cannot be used safely or portably and its representation may
@@ -670,7 +681,7 @@ func main() {
 }
 ```
 
-7. Go并发哲学
+#### Go并发哲学
 > Do not communicate by sharing memory; instead, share memory by communicating.
 > 
 > [如何理解 Golang 中“不要通过共享内存来通信，而应该通过通信来共享内存”？](https://www.zhihu.com/question/58004055)
@@ -712,7 +723,7 @@ func main() {
 >
 > 所以才会说：高内聚低耦合嘛
 
-8. context
+#### context
 > 在Go服务中，往往由一个独立的goroutine去处理一次请求，但在这个goroutine中，可能会开启别的goroutine去执行一些具体的事务，如数据库，RPC等，同时，这一组goroutine可能还需要共同访问一些特殊的值，如用户token, 请求过期时间等，当一个请求超时后，我们希望与此请求有关的所有goroutine都能快速退出，以回收系统资源。所以我们需要一种可以跟踪goroutine的方案，才可以达到控制他们的目的，这就是 Go语言为我们提供的Context，称之为上下文非常贴切，它就是goroutine的上下文。
 >
 ```Go
@@ -1146,7 +1157,7 @@ func withCancel(parent Context) *cancelCtx {
 }
 ```
 
-9. CGO 
+#### CGO 
 > 要使用 CGO 特性，需要安装 C/C++ 构建工具链，在 macOS 和 Linux 下是要安装 GCC，在 windows 下是需要安装 MinGW 工具。同时需要保证环境变量 CGO_ENABLED 被设置为 1，这表示 CGO 是被启用的状态。
 
    - 启用CGO
@@ -1643,7 +1654,7 @@ func withCancel(parent Context) *cancelCtx {
    > 
    > system call结束以后，绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。c 线程被唤醒后，拿到 P，继续执行。
 
-10. 泛型(https://segmentfault.com/a/1190000041634906)
+#### 泛型(https://segmentfault.com/a/1190000041634906)
 
 ![alt text](img/generic1.webp)
 > 在Go1.18之前，Go官方对 接口(interface) 的定义是：接口是一个方法集(method set)
@@ -1779,3 +1790,208 @@ func (lru *LRUCache[KT, VT]) Delete(key KT) {
 	}
 }
 ```
+
+#### slog
+   - 架构
+    ![alt text](img/slog1.png)
+
+   - 示例
+   ```go
+    // 简单使用
+    package main
+
+    import (
+        "net"
+        "os"
+
+        "log/slog"
+    )
+
+    func main() {
+        opts := &slog.HandlerOptions{
+            AddSource: true,
+            // Level reports the minimum record level that will be logged.
+            Level: slog.LevelDebug,
+        }
+
+        h := slog.NewTextHandler(os.Stderr, opts)
+        l := slog.New(h)
+        l.Info("greeting", "name", "tony")
+        l.Error("oops", "err", net.ErrClosed, "status", 500)
+
+        h1 := slog.NewJSONHandler(os.Stderr, opts)
+        l1 := slog.New(h1)
+        l1.Info("greeting", "name", "tony")
+        l1.Error("oops", "err", net.ErrClosed, "status", 500)
+    }
+   ```
+   ```json
+    time=2025-09-27T14:16:28.355+08:00 level=INFO source=C:/Users/Administrator/Desktop/Server/test.go:20 msg=greeting name=tony
+    time=2025-09-27T14:16:28.390+08:00 level=ERROR source=C:/Users/Administrator/Desktop/Server/test.go:21 msg=oops err="use of closed network connection" status=500
+    {"time":"2025-09-27T14:16:28.3905092+08:00","level":"INFO","source":{"function":"main.main","file":"C:/Users/Administrator/Desktop/Server/test.go","line":25},"msg":"greeting","name":"tony"}
+    {"time":"2025-09-27T14:16:28.3905092+08:00","level":"ERROR","source":{"function":"main.main","file":"C:/Users/Administrator/Desktop/Server/test.go","line":26},"msg":"oops","err":"use of closed network connection","status":500}
+   ```
+
+   ```go
+    // 属性字段
+    package main
+
+    import (
+        "net"
+
+        "log/slog"
+    )
+
+    func main() {
+        // 属性字段
+        l := slog.Default().With("attr1", "attr1_value", "attr2", "attr2_value")
+        l.Error("connect server error", "err", net.ErrClosed, "status", 500)
+        l.Error("close conn error", "err", net.ErrClosed, "status", 501)
+    }
+   ```
+   ```bash
+    2025/09/27 14:23:53 ERROR connect server error attr1=attr1_value attr2=attr2_value err="use of closed network connection" status=500
+    2025/09/27 14:23:53 ERROR close conn error attr1=attr1_value attr2=attr2_value err="use of closed network connection" status=501
+   ```
+
+   ```go
+    // Group使用
+    package main
+
+    import (
+        "fmt"
+        "log/slog"
+        "net/http"
+        "os"
+        "time"
+    )
+
+    func main() {
+        r, _ := http.NewRequest("GET", "localhost", nil)
+
+        logger := slog.New(
+            slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+                ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+                    fmt.Println(groups, a)
+                    if a.Key == slog.TimeKey && len(groups) == 0 {
+                        // 说明被过滤了
+                        return slog.Attr{}
+                    }
+                    return a
+                },
+            }),
+        )
+
+        logger.Info("finished",
+            slog.Group("req",
+                slog.String("method", r.Method),
+                slog.String("url", r.URL.String()),
+            ),
+            slog.Int("status", http.StatusOK),
+            slog.Duration("duration", time.Second),
+        )
+    }
+   ```
+   ```json
+    [] time=2025-09-27 14:41:50.5499173 +0800 CST
+    [] level=INFO
+    [] msg=finished
+    [req] method=GET
+    [req] url=localhost
+    [] status=200
+    [] duration=1s
+    {"level":"INFO","msg":"finished","req":{"method":"GET","url":"localhost"},"status":200,"duration":1000000000}   
+   ```
+
+   ```go
+    // 自定义Handler接口的实现
+    package main
+
+    import (
+        "bytes"
+        "context"
+        "fmt"
+        "log/slog"
+        "net"
+        "time"
+    )
+
+    type ChanHandler struct {
+        slog.Handler
+        ch  chan []byte
+        buf *bytes.Buffer
+    }
+
+    func (h *ChanHandler) Enabled(ctx context.Context, level slog.Level) bool {
+        return h.Handler.Enabled(ctx, level)
+    }
+
+    func (h *ChanHandler) Handle(ctx context.Context, r slog.Record) error {
+        err := h.Handler.Handle(ctx, r)
+        if err != nil {
+            return err
+        }
+
+        var nb = make([]byte, h.buf.Len())
+        copy(nb, h.buf.Bytes())
+        h.ch <- nb
+        h.buf.Reset()
+        return nil
+    }
+
+    func (h *ChanHandler) WithAttrs(as []slog.Attr) slog.Handler {
+        return &ChanHandler{
+            buf:     h.buf,
+            ch:      h.ch,
+            Handler: h.Handler.WithAttrs(as),
+        }
+    }
+
+    func (h *ChanHandler) WithGroup(name string) slog.Handler {
+        return &ChanHandler{
+            buf:     h.buf,
+            ch:      h.ch,
+            Handler: h.Handler.WithGroup(name),
+        }
+    }
+
+    func NewChanHandler(ch chan []byte, opts *slog.HandlerOptions) *ChanHandler {
+        var b = make([]byte, 0, 256)
+        h := &ChanHandler{
+            buf: bytes.NewBuffer(b),
+            ch:  ch,
+        }
+
+        h.Handler = slog.NewJSONHandler(h.buf, opts)
+        return h
+    }
+
+    func main() {
+        var ch = make(chan []byte, 100)
+        attrs := []slog.Attr{
+            {Key: "field1", Value: slog.StringValue("value1")},
+            {Key: "field2", Value: slog.StringValue("value2")},
+        }
+        slog.SetDefault(slog.New(NewChanHandler(ch, nil).WithAttrs(attrs)))
+
+        go func() {
+            // 模拟channel的消费者，用来消费日志
+            for {
+                b := <-ch
+                fmt.Print(string(b))
+            }
+        }()
+
+        slog.Info("hello", "name", "Al")
+        slog.Error("oops", "netErrs", net.ErrClosed, "status", 500)
+        slog.LogAttrs(nil, slog.LevelError, "oops", slog.Int("status", 500), slog.Any("err", net.ErrClosed))
+
+        // 等待消费者处理完日志
+        time.Sleep(1 * time.Second)
+    }
+   ```
+   ```json
+    {"time":"2025-09-27T17:13:28.8891691+08:00","level":"INFO","msg":"hello","field1":"value1","field2":"value2","name":"Al"}
+    {"time":"2025-09-27T17:13:28.9114388+08:00","level":"ERROR","msg":"oops","field1":"value1","field2":"value2","netErrs":"use of closed network connection","status":500}
+    {"time":"2025-09-27T17:13:28.9114388+08:00","level":"ERROR","msg":"oops","field1":"value1","field2":"value2","status":500,"err":"use of closed network connection"}
+   ```
