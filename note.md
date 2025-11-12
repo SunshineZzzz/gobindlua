@@ -1,15 +1,38 @@
 - [GMP](#gmp)
+    - [M0和G0](#m0和g0)
 - [GOPATH](#gopath)
-- [go interface底层，Go版本是1.25.1](#go-interface底层go版本是1251)
-- [反射底层，Go版本是1.25.1](#反射底层go版本是1251)
-- [底层数据类型，Go版本是1.25.1](#底层数据类型go版本是1251)
+- [GOVENDOR](#govendor)
+- [go interface底层](#go-interface底层)
+- [反射底层](#反射底层)
+- [反射三定律](#反射三定律)
+    - [可以从接口值中得到反射对象](#可以从接口值中得到反射对象)
+    - [可以从反射对象中获得接口值](#可以从反射对象中获得接口值)
+    - [若要修改反射对象值必须可修改](#若要修改反射对象值必须可修改)
+    - [反射总结](#反射总结)
+- [底层数据类型](#底层数据类型)
 - [Go并发哲学](#go并发哲学)
 - [context](#context)
+    - [context源码](#context源码)
 - [CGO](#cgo)
-- [泛型(https://segmentfault.com/a/1190000041634906)](#泛型httpssegmentfaultcoma1190000041634906)
+    - [启用CGO](#启用cgo)
+    - [CGO序文](#cgo序文)
+    - [CGO编译选项](#cgo编译选项)
+    - [编译标签(build tag)](#编译标签build-tag)
+    - [CGO数值类型映射关系](#cgo数值类型映射关系)
+    - [Go中一些类型在C中也有对应的类型](#go中一些类型在c中也有对应的类型)
+    - [结构体、联合、枚举类型](#结构体联合枚举类型)
+    - [Go调用C函数](#go调用c函数)
+    - [C调用Go](#c调用go)
+    - [传递指针存在问题](#传递指针存在问题)
+    - [runtime.Pinner](#runtimepinner)
+    - [CGO内部机制](#cgo内部机制)
+    - [CGO调用机制](#cgo调用机制)
+        - [Go调用C](#cgo-go调用c)
+        - [原生C调用Go](#原生c调用go)
+- [泛型](#泛型)
 - [slog](#slog)
 
-#### GMP
+### GMP
    - M:N模型
    
    ![alt text](img/GMP1.png)
@@ -90,7 +113,7 @@
    >
    > ![alt text](img/GMP12.png)
 
-   - M0和G0
+### M0和G0
  
    ![alt text](img/GMP13.jpg)
 
@@ -100,7 +123,8 @@
   
    ![alt text](img/GMP16.png)
 
-#### GOPATH
+### GOPATH
+
 > 可以理解为工作目录，该目录下一般包含以下几个子目录：
 > 
 > - src：存放项目的Go代码
@@ -111,7 +135,8 @@
 >
 > ```GOPATH```存在的问题主要是没有版本的概念，不同项目下无法使用多个版本库。
 
-1. go vendor
+### GOVENDOR
+
 > 为了解决```GOPATH```方案下不同项目下无法使用多个版本库的问题，Go v1.5开始支持```vendor```。
 >
 > 以前使用```GOPATH```的时候，所有的项目都共享一个```GOPATH```，需要导入依赖的时候，都来这里找，在```GOPATH```模式下只能有一个版本的第三方库。解决的思路就是，在每个项目下都创建一个```vendor```目录，每个项目所需的依赖都只会下载到自己```vendor```目录下，项目之间的依赖包互不影响。其搜索包的优先级顺序，由高到低是这样的:
@@ -142,7 +167,10 @@
 >
 > 每一行都是由```模块路径```，```模块版本```，```哈希检验值```组成，其中```哈希检验值```是用来保证当前缓存的模块不会被篡改。
 
-#### go interface底层，Go版本是1.25.1
+### go interface底层
+
+Go版本是1.25.1
+
 ```GO
 type _type = abi.Type
 // 非空接口，带有方法的interface
@@ -435,148 +463,160 @@ go tool objdump -s "main\.main" tmp
   main.go:25            0x14009ef64             4889542430                      MOVQ DX, 0x30(SP)
 ```
 
-#### 反射底层，Go版本是1.25.1
-   - reflect.TypeOf() 底层实现
-   ```Go
-    // TypeOf returns the abi.Type of some value.
-    func TypeOf(a any) *Type {
-        eface := *(*EmptyInterface)(unsafe.Pointer(&a))
-        // Types are either static (for compiler-created types) or
-        // heap-allocated but always reachable (for reflection-created
-        // types, held in the central map). So there is no need to
-        // escape types. noescape here help avoid unnecessary escape
-        // of v.
-        return (*Type)(NoEscape(unsafe.Pointer(eface.Type)))
+### 反射底层
+
+Go版本是1.25.1
+
+reflect.TypeOf() 底层实现
+
+```Go
+// TypeOf returns the abi.Type of some value.
+func TypeOf(a any) *Type {
+    eface := *(*EmptyInterface)(unsafe.Pointer(&a))
+    // Types are either static (for compiler-created types) or
+    // heap-allocated but always reachable (for reflection-created
+    // types, held in the central map). So there is no need to
+    // escape types. noescape here help avoid unnecessary escape
+    // of v.
+    return (*Type)(NoEscape(unsafe.Pointer(eface.Type)))
+}
+
+// EmptyInterface describes the layout of a "interface{}" or a "any."
+// These are represented differently than non-empty interface, as the first
+// word always points to an abi.Type.
+type EmptyInterface struct {
+    Type *Type
+    Data unsafe.Pointer
+}
+```
+
+reflect.ValueOf() 底层实现
+
+```Go
+type Value struct {
+    // typ_ holds the type of the value represented by a Value.
+    // Access using the typ method to avoid escape of v.
+    typ_ *abi.Type
+
+    // Pointer-valued data or, if flagIndir is set, pointer to data.
+    // Valid when either flagIndir is set or typ.pointers() is true.
+    ptr unsafe.Pointer
+
+    // flag holds metadata about the value.
+    //
+    // The lowest five bits give the Kind of the value, mirroring typ.Kind().
+    //
+    // The next set of bits are flag bits:
+    //	- flagStickyRO: obtained via unexported not embedded field, so read-only
+    //	- flagEmbedRO: obtained via unexported embedded field, so read-only
+    //	- flagIndir: val holds a pointer to the data
+    //	- flagAddr: v.CanAddr is true (implies flagIndir and ptr is non-nil)
+    //	- flagMethod: v is a method value.
+    // If ifaceIndir(typ), code can assume that flagIndir is set.
+    //
+    // The remaining 22+ bits give a method number for method values.
+    // If flag.kind() != Func, code can assume that flagMethod is unset.
+    flag
+
+    // A method value represents a curried method invocation
+    // like r.Read for some receiver r. The typ+val+flag bits describe
+    // the receiver r, but the flag's Kind bits say Func (methods are
+    // functions), and the top bits of the flag give the method number
+    // in r's type's method table.
+}
+
+// ValueOf returns a new Value initialized to the concrete value
+// stored in the interface i. ValueOf(nil) returns the zero Value.
+func ValueOf(i any) Value {
+    if i == nil {
+        return Value{}
     }
+    return unpackEface(i)
+}
 
-    // EmptyInterface describes the layout of a "interface{}" or a "any."
-    // These are represented differently than non-empty interface, as the first
-    // word always points to an abi.Type.
-    type EmptyInterface struct {
-        Type *Type
-        Data unsafe.Pointer
+// unpackEface converts the empty interface i to a Value.
+func unpackEface(i any) Value {
+    e := (*abi.EmptyInterface)(unsafe.Pointer(&i))
+    // NOTE: don't read e.word until we know whether it is really a pointer or not.
+    t := e.Type
+    if t == nil {
+        return Value{}
     }
-   ```
-
-   - reflect.ValueOf() 底层实现
-   ```Go
-    type Value struct {
-        // typ_ holds the type of the value represented by a Value.
-        // Access using the typ method to avoid escape of v.
-        typ_ *abi.Type
-
-        // Pointer-valued data or, if flagIndir is set, pointer to data.
-        // Valid when either flagIndir is set or typ.pointers() is true.
-        ptr unsafe.Pointer
-
-        // flag holds metadata about the value.
-        //
-        // The lowest five bits give the Kind of the value, mirroring typ.Kind().
-        //
-        // The next set of bits are flag bits:
-        //	- flagStickyRO: obtained via unexported not embedded field, so read-only
-        //	- flagEmbedRO: obtained via unexported embedded field, so read-only
-        //	- flagIndir: val holds a pointer to the data
-        //	- flagAddr: v.CanAddr is true (implies flagIndir and ptr is non-nil)
-        //	- flagMethod: v is a method value.
-        // If ifaceIndir(typ), code can assume that flagIndir is set.
-        //
-        // The remaining 22+ bits give a method number for method values.
-        // If flag.kind() != Func, code can assume that flagMethod is unset.
-        flag
-
-        // A method value represents a curried method invocation
-        // like r.Read for some receiver r. The typ+val+flag bits describe
-        // the receiver r, but the flag's Kind bits say Func (methods are
-        // functions), and the top bits of the flag give the method number
-        // in r's type's method table.
+    f := flag(t.Kind())
+    if t.IfaceIndir() {
+        f |= flagIndir
     }
+    return Value{t, e.Data, f}
+}
+```
 
-    // ValueOf returns a new Value initialized to the concrete value
-    // stored in the interface i. ValueOf(nil) returns the zero Value.
-    func ValueOf(i any) Value {
-        if i == nil {
-            return Value{}
-        }
-        return unpackEface(i)
-    }
+### 反射三定律
 
-    // unpackEface converts the empty interface i to a Value.
-    func unpackEface(i any) Value {
-        e := (*abi.EmptyInterface)(unsafe.Pointer(&i))
-        // NOTE: don't read e.word until we know whether it is really a pointer or not.
-        t := e.Type
-        if t == nil {
-            return Value{}
-        }
-        f := flag(t.Kind())
-        if t.IfaceIndir() {
-            f |= flagIndir
-        }
-        return Value{t, e.Data, f}
-    }
-   ```
-
-   - 反射三定律: 反射可以从接口值中得到反射对象
+#### 可以从接口值中得到反射对象
      
-   ![alt text](img/reflect1.png) 
-    
-   ![alt text](img/reflect2.png)
+![alt text](img/reflect1.png) 
 
-   - 反射三定律: 反射可以从反射对象中获得接口值
+![alt text](img/reflect2.png)
+
+#### 可以从反射对象中获得接口值
  
-   ![alt text](img/reflect3.png)
+![alt text](img/reflect3.png)
 
-   ```Go
-    // Interface returns v's current value as an interface{}.
-    // It is equivalent to:
-    //
-    //	var i interface{} = (v's underlying value)
-    //
-    // It panics if the Value was obtained by accessing
-    // unexported struct fields.
-    func (v Value) Interface() (i any) {
-        return valueInterface(v, true)
+```Go
+// Interface returns v's current value as an interface{}.
+// It is equivalent to:
+//
+//	var i interface{} = (v's underlying value)
+//
+// It panics if the Value was obtained by accessing
+// unexported struct fields.
+func (v Value) Interface() (i any) {
+    return valueInterface(v, true)
+}
+
+func valueInterface(v Value, safe bool) any {
+    if v.flag == 0 {
+        panic(&ValueError{"reflect.Value.Interface", Invalid})
+    }
+    if safe && v.flag&flagRO != 0 {
+        // Do not allow access to unexported values via Interface,
+        // because they might be pointers that should not be
+        // writable or methods or function that should not be callable.
+        panic("reflect.Value.Interface: cannot return value obtained from unexported field or method")
+    }
+    if v.flag&flagMethod != 0 {
+        v = makeMethodValue("Interface", v)
     }
 
-    func valueInterface(v Value, safe bool) any {
-	    if v.flag == 0 {
-		    panic(&ValueError{"reflect.Value.Interface", Invalid})
-	    }
-	    if safe && v.flag&flagRO != 0 {
-		    // Do not allow access to unexported values via Interface,
-		    // because they might be pointers that should not be
-		    // writable or methods or function that should not be callable.
-		    panic("reflect.Value.Interface: cannot return value obtained from unexported field or method")
-	    }
-	    if v.flag&flagMethod != 0 {
-		    v = makeMethodValue("Interface", v)
-	    }
-
-	    if v.kind() == Interface {
-		    // Special case: return the element inside the interface.
-		    return packIfaceValueIntoEmptyIface(v)
-	    }
-
-	    return packEface(v)
+    if v.kind() == Interface {
+        // Special case: return the element inside the interface.
+        return packIfaceValueIntoEmptyIface(v)
     }
-   ```
 
-   - 反射三定律: 若要修改反射对象，值必须可修改
-   ```Go
-    func main() {
-        var x float64 = 3.4
-        v := reflect.ValueOf(x)
-        v.SetFloat(7.1) // Error: will panic.
-    }
-   ```
-   调用```reflect.ValueOf```传进去的是一个值类型的变量，获得的```Value```其实是完全的值拷贝，这个```Value```是不能被修改的。如果传进去是一个指针，获得的```Value```是一个指针副本，但是这个指针指向的地址的对象是可以改变的。
+    return packEface(v)
+}
+```
 
-   - 总结
+#### 若要修改反射对象值必须可修改
+
+```Go
+func main() {
+    var x float64 = 3.4
+    v := reflect.ValueOf(x)
+    v.SetFloat(7.1) // Error: will panic.
+}
+```
+
+调用```reflect.ValueOf```传进去的是一个值类型的变量，获得的```Value```其实是完全的值拷贝，这个```Value```是不能被修改的。如果传进去是一个指针，获得的```Value```是一个指针副本，但是这个指针指向的地址的对象是可以改变的。
+
+#### 反射总结
   
-   ![alt text](img/reflect4.png)
+![alt text](img/reflect4.png)
 
-#### 底层数据类型，Go版本是1.25.1
+### 底层数据类型
+
+Go版本是1.25.1
+
 ```Go
 // Slice is the runtime representation of a slice.
 // It cannot be used safely or portably and its representation may
@@ -647,7 +687,9 @@ func (v Value) Index(i int) Value {
 	panic(&ValueError{"reflect.Value.Index", v.kind()})
 }
 ```
+
 数组没有专属底层数据结构，应该就是一个连续的内存块
+
 ```Go
 package main
 
@@ -685,7 +727,8 @@ func main() {
 }
 ```
 
-#### Go并发哲学
+### Go并发哲学
+
 > Do not communicate by sharing memory; instead, share memory by communicating.
 > 
 > [如何理解 Golang 中“不要通过共享内存来通信，而应该通过通信来共享内存”？](https://www.zhihu.com/question/58004055)
@@ -693,7 +736,7 @@ func main() {
 > 从架构上来讲，降低共享内存的使用，本来就是解耦和的重要手段之一，举几个例子
 > 
 > 案例：MMORPG AOI 模块
-> MMORPG 服务器逻辑依赖实时计算 AOI，AOI计算模块需要实时告诉其他模块，对于某个玩家：
+> MMORPG 服务器逻辑依赖实时计算 AOI(area of interest)，AOI计算模块需要实时告诉其他模块，对于某个玩家：
 >
 > 1.有哪些人进入了我的视线范围？
 > 
@@ -727,9 +770,11 @@ func main() {
 >
 > 所以才会说：高内聚低耦合嘛
 
-#### context
+### context
+
 > 在Go服务中，往往由一个独立的goroutine去处理一次请求，但在这个goroutine中，可能会开启别的goroutine去执行一些具体的事务，如数据库，RPC等，同时，这一组goroutine可能还需要共同访问一些特殊的值，如用户token, 请求过期时间等，当一个请求超时后，我们希望与此请求有关的所有goroutine都能快速退出，以回收系统资源。所以我们需要一种可以跟踪goroutine的方案，才可以达到控制他们的目的，这就是 Go语言为我们提供的Context，称之为上下文非常贴切，它就是goroutine的上下文。
 >
+
 ```Go
 package main
 
@@ -812,7 +857,9 @@ func main() {
 }
 ```
 
-源码, Go版本是1.25.1 
+#### context源码
+
+Go版本是1.25.1 
 
 ```Go
 // context取消接口，定义了两个方法
@@ -1161,67 +1208,75 @@ func withCancel(parent Context) *cancelCtx {
 }
 ```
 
-#### CGO 
-> 要使用 CGO 特性，需要安装 C/C++ 构建工具链，在 macOS 和 Linux 下是要安装 GCC，在 windows 下是需要安装 MinGW 工具。同时需要保证环境变量 CGO_ENABLED 被设置为 1，这表示 CGO 是被启用的状态。
+### CGO 
 
-   - 启用CGO
-   > import "C"，导入一个伪包C。随后，Go代码即可引用诸如C.size_t之类的类型、C.stdout之类的变量，或C.putchar之类的函数。
+要使用CGO特性，需要安装C/C++构建工具链，在macOS和Linux下是要安装GCC，在windows下是需要安装MinGW工具。同时需要保证环境变量CGO_ENABLED被设置为1，这表示CGO是被启用的状态。
+
+#### 启用CGO
+
+import "C"，导入一个伪包C。随后，Go代码即可引用诸如C.size_t之类的类型、C.stdout之类的变量，或C.putchar之类的函数。
    
-   - preamble
-   > 通过import "C"语句启用CGO，CGO 会将紧跟的上一行代码所处注释块的内容视为C代码块，被称为序文(preamble)。例如：
-   ```Go
-   // #include <stdio.h>
-   // #include <errno.h>
-   import "C"
-   ```
-   > 序文部分可包含任意C语言代码，包括函数声明与变量声明。这些内容可在Go代码中被引用，如同它们定义在C包中一般。前言中声明的所有名称均可使用，即使其以小写字母开头。例外情况：前言中的静态变量不可在Go代码中被引用；静态函数则允许使用。
+#### CGO序文
 
-   - 编译选项
-   > 同样实在徐文中编写，比如
-   ```Go
-   // #cgo CFLAGS: -DPNG_DEBUG=1
-   // #cgo amd64 386 CFLAGS: -DX86=1
-   // #cgo LDFLAGS: -lpng  
-   // #include <png.h>
-   import "C"
-   ```
-   ```Go
-    package main
+通过import "C"语句启用CGO，CGO 会将紧跟的上一行代码所处注释块的内容视为C代码块，被称为序文(preamble)。例如：
 
-    /*
-    #cgo windows,lua547 CFLAGS: -DCGO_OS_WINDOWS=1
-    #cgo darwin,lua547 CFLAGS: -DCGO_OS_DARWIN=1
-    #cgo linux,lua547 CFLAGS: -DCGO_OS_LINUX=1
+```Go
+// #include <stdio.h>
+// #include <errno.h>
+import "C"
+```
 
-    #if defined(CGO_OS_WINDOWS)
-        const char* os = "windows";
-    #elif defined(CGO_OS_DARWIN)
-        const char* os = "darwin";
-    #elif defined(CGO_OS_LINUX)
-        const char* os = "linux";
-    #else
-    #	error(unknown os)
-    #endif
-    */
-    import "C"
+序文部分可包含任意C语言代码，包括函数声明与变量声明。这些内容可在Go代码中被引用，如同它们定义在C包中一般。前言中声明的所有名称均可使用，即使其以小写字母开头。例外情况：前言中的静态变量不可在Go代码中被引用；静态函数则允许使用。
 
-    func main() {
-        print(C.GoString(C.os))
-    }
-   ```
+#### CGO编译选项
 
-   - build tag 
-   > build tag 是在 Go 或 cgo 环境下的 C/C++ 文件开头的一种特殊的注释。条件编译类似于前面通过 #cgo 指令针对不同平台定义的宏，只有在对应平台的宏被定义之后才会构建对应的代码。但是通过 #cgo 指令定义宏有个限制，它只能是基于 Go 语言支持的 windows、darwin 和 linux 等已经支持的操作系统。如果我们希望定义一个 DEBUG 标志的宏，#cgo 指令就无能为力了。而 Go 语言提供的 build tag 条件编译特性则可以简单做到。
-   ```Go
-    //go:build linux,386 darwin,!cgo
-   ```
-   > 意味着这个 Go 源文件将在以下任何一种条件满足时被 Go 编译器包含：
-   >
-   > 操作系统为 Linux 且架构为 386
-   > 
-   > 操作系统为 Darwin（macOS）且 CGO 未被启用
+同样是在徐文中编写，比如
 
-   - 数值类型映射关系
+```Go
+// #cgo CFLAGS: -DPNG_DEBUG=1
+// #cgo amd64 386 CFLAGS: -DX86=1
+// #cgo LDFLAGS: -lpng  
+// #include <png.h>
+import "C"
+```
+```Go
+package main
+
+/*
+#cgo windows,lua547 CFLAGS: -DCGO_OS_WINDOWS=1
+#cgo darwin,lua547 CFLAGS: -DCGO_OS_DARWIN=1
+#cgo linux,lua547 CFLAGS: -DCGO_OS_LINUX=1
+
+#if defined(CGO_OS_WINDOWS)
+    const char* os = "windows";
+#elif defined(CGO_OS_DARWIN)
+    const char* os = "darwin";
+#elif defined(CGO_OS_LINUX)
+    const char* os = "linux";
+#else
+#	error(unknown os)
+#endif
+*/
+import "C"
+
+func main() {
+    print(C.GoString(C.os))
+}
+```
+
+#### 编译标签(build tag)
+
+build tag是在Go或cgo环境下的C/C++文件开头的一种特殊的注释。条件编译类似于前面通过 #cgo 指令针对不同平台定义的宏，只有在对应平台的宏被定义之后才会构建对应的代码。但是通过 #cgo 指令定义宏有个限制，它只能是基于 Go 语言支持的 windows、darwin 和 linux 等已经支持的操作系统。如果我们希望定义一个 DEBUG 标志的宏，#cgo 指令就无能为力了。而 Go 语言提供的 build tag 条件编译特性则可以简单做到。
+
+```Go
+//go:build linux,386 darwin,!cgo
+```
+意味着这个 Go 源文件将在以下任何一种条件满足时被 Go 编译器包含：
+
+1. 操作系统为 Linux 且架构为 386
+2. 操作系统为 Darwin（macOS）且 CGO 未被启用
+
+#### cgo数值类型映射关系
 
 | C 语言类型 | CGO 类型 | Go 语言类型 |
 | :-----| ----: | :----: |
@@ -1247,418 +1302,448 @@ func withCancel(parent Context) *cancelCtx {
 | uint32_t | C.uint32_t | uint32 |
 | int64_t | C.int64_t | int64 |
 | uint64_t | C.uint64_t | uint64 |
-   ```C
-    // Go string to C string
-    // The C string is allocated in the C heap using malloc.
-    // It is the caller's responsibility to arrange for it to be
-    // freed, such as by calling C.free (be sure to include stdlib.h
-    // if C.free is needed).
-    func C.CString(string) *C.char
 
-    // Go []byte slice to C array
-    // The C array is allocated in the C heap using malloc.
-    // It is the caller's responsibility to arrange for it to be
-    // freed, such as by calling C.free (be sure to include stdlib.h
-    // if C.free is needed).
-    func C.CBytes([]byte) unsafe.Pointer
+```C
+// Go string to C string
+// The C string is allocated in the C heap using malloc.
+// It is the caller's responsibility to arrange for it to be
+// freed, such as by calling C.free (be sure to include stdlib.h
+// if C.free is needed).
+func C.CString(string) *C.char
 
-    // C string to Go string
-    func C.GoString(*C.char) string
+// Go []byte slice to C array
+// The C array is allocated in the C heap using malloc.
+// It is the caller's responsibility to arrange for it to be
+// freed, such as by calling C.free (be sure to include stdlib.h
+// if C.free is needed).
+func C.CBytes([]byte) unsafe.Pointer
 
-    // C data with explicit length to Go string
-    func C.GoStringN(*C.char, C.int) string
+// C string to Go string
+func C.GoString(*C.char) string
 
-    // C data with explicit length to Go []byte
-    func C.GoBytes(unsafe.Pointer, C.int) []byte
-   ```
+// C data with explicit length to Go string
+func C.GoStringN(*C.char, C.int) string
 
-   - Go中一些类型在C中也有对应的类型
-   ```C
-    // _cgo_export.h
-    #ifndef GO_CGO_EXPORT_PROLOGUE_H
-    #define GO_CGO_EXPORT_PROLOGUE_H
+// C data with explicit length to Go []byte
+func C.GoBytes(unsafe.Pointer, C.int) []byte
+```
 
-    #ifndef GO_CGO_GOSTRING_TYPEDEF
-    typedef struct { const char *p; ptrdiff_t n; } _GoString_;
-    extern size_t _GoStringLen(_GoString_ s);
-    extern const char *_GoStringPtr(_GoString_ s);
-    #endif
+#### Go中一些类型在C中也有对应的类型
 
-    #endif 
+```C
+// _cgo_export.h
+#ifndef GO_CGO_EXPORT_PROLOGUE_H
+#define GO_CGO_EXPORT_PROLOGUE_H
 
-    typedef signed char GoInt8;
-    typedef unsigned char GoUint8;
-    typedef short GoInt16;
-    typedef unsigned short GoUint16;
-    typedef int GoInt32;
-    typedef unsigned int GoUint32;
-    typedef long long GoInt64;
-    typedef unsigned long long GoUint64;
-    typedef GoInt64 GoInt;
-    typedef GoUint64 GoUint;
-    typedef size_t GoUintptr;
-    typedef float GoFloat32;
-    typedef double GoFloat64;
+#ifndef GO_CGO_GOSTRING_TYPEDEF
+typedef struct { const char *p; ptrdiff_t n; } _GoString_;
+extern size_t _GoStringLen(_GoString_ s);
+extern const char *_GoStringPtr(_GoString_ s);
+#endif
 
-    #ifndef GO_CGO_GOSTRING_TYPEDEF
-    typedef _GoString_ GoString;
-    #endif
-    typedef void *GoMap;
-    typedef void *GoChan;
-    typedef struct { void *t; void *v; } GoInterface;
-    typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
-   ```
+#endif 
 
-   - 结构体、联合、枚举类型
-   ```Go
-    /*
-    struct A {
-        int i;
-        float f;
-    };
-    */
-    import "C"
-    import "fmt"
+typedef signed char GoInt8;
+typedef unsigned char GoUint8;
+typedef short GoInt16;
+typedef unsigned short GoUint16;
+typedef int GoInt32;
+typedef unsigned int GoUint32;
+typedef long long GoInt64;
+typedef unsigned long long GoUint64;
+typedef GoInt64 GoInt;
+typedef GoUint64 GoUint;
+typedef size_t GoUintptr;
+typedef float GoFloat32;
+typedef double GoFloat64;
 
-    func main() {
-        var a C.struct_A
-        fmt.Println(a.i)
-        fmt.Println(a.f)
+#ifndef GO_CGO_GOSTRING_TYPEDEF
+typedef _GoString_ GoString;
+#endif
+typedef void *GoMap;
+typedef void *GoChan;
+typedef struct { void *t; void *v; } GoInterface;
+typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
+```
+
+#### 结构体、联合、枚举类型
+
+```Go
+/*
+struct A {
+    int i;
+    float f;
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var a C.struct_A
+    fmt.Println(a.i)
+    fmt.Println(a.f)
+}
+```
+
+```Go
+/*
+struct A {
+    int type; // type 是 Go 语言的关键字
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var a C.struct_A
+    fmt.Println(a._type) // _type 对应 type
+}   
+```
+
+```Go
+/*
+struct A {
+    int   type;  // type 是 Go 语言的关键字
+    float _type; // 将屏蔽 CGO 对 type 成员的访问
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var a C.struct_A
+    fmt.Println(a._type) // _type 对应 _type
+}
+```
+
+```Go
+/*
+struct A {
+    int   size: 10; // 位字段无法访问
+    float arr[];    // 零长的数组也无法访问
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var a C.struct_A
+    fmt.Println(a.size) // 错误: 位字段无法访问
+    fmt.Println(a.arr)  // 错误: 零长的数组也无法访问
+}
+```
+
+```Go
+/*
+#include <stdint.h>
+
+union B {
+    int i;
+    float f;
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var b C.union_B;
+    fmt.Println("b.i:", *(*C.int)(unsafe.Pointer(&b)))
+    fmt.Println("b.f:", *(*C.float)(unsafe.Pointer(&b)))
+}
+```
+
+```Go
+/*
+#include <stdint.h>
+
+union B1 {
+    int i;
+    float f;
+};
+
+union B2 {
+    int8_t i8;
+    int64_t i64;
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var b1 C.union_B1;
+    fmt.Printf("%T\n", b1) // [4]uint8
+
+    var b2 C.union_B2;
+    fmt.Printf("%T\n", b2) // [8]uint8
+}   
+```
+
+```Go
+/*
+enum C {
+    ONE,
+    TWO,
+};
+*/
+import "C"
+import "fmt"
+
+func main() {
+    var c C.enum_C = C.TWO
+    fmt.Println(c)
+    fmt.Println(C.ONE)
+    fmt.Println(C.TWO)
+}
+```
+
+#### Go调用C函数
+
+```Go
+/*
+#include <errno.h>
+
+static int div(int a, int b) {
+    if(b == 0) {
+        errno = EINVAL;
+        return 0;
     }
-   ```
-   ```Go
-    /*
-    struct A {
-        int type; // type 是 Go 语言的关键字
-    };
-    */
-    import "C"
-    import "fmt"
+    return a/b;
+}
+*/
+import "C"
+import "fmt"
 
-    func main() {
-        var a C.struct_A
-        fmt.Println(a._type) // _type 对应 type
-    }   
-   ```
-   ```Go
-    /*
-    struct A {
-        int   type;  // type 是 Go 语言的关键字
-        float _type; // 将屏蔽 CGO 对 type 成员的访问
-    };
-    */
-    import "C"
-    import "fmt"
+func main() {
+    v0, err0 := C.div(2, 1)
+    // 2 <nil>
+    fmt.Println(v0, err0)
 
-    func main() {
-        var a C.struct_A
-        fmt.Println(a._type) // _type 对应 _type
-    }
-   ```
-   ```Go
-    /*
-    struct A {
-        int   size: 10; // 位字段无法访问
-        float arr[];    // 零长的数组也无法访问
-    };
-    */
-    import "C"
-    import "fmt"
+    v1, err1 := C.div(1, 0)
+    // 0 invalid argument
+    fmt.Println(v1, err1)
+}
+```
 
-    func main() {
-        var a C.struct_A
-        fmt.Println(a.size) // 错误: 位字段无法访问
-        fmt.Println(a.arr)  // 错误: 零长的数组也无法访问
-    }
-   ```
-   ```Go
-    /*
-    #include <stdint.h>
+#### C调用Go
 
-    union B {
-        int i;
-        float f;
-    };
-    */
-    import "C"
-    import "fmt"
+```Go
+package main
 
-    func main() {
-        var b C.union_B;
-        fmt.Println("b.i:", *(*C.int)(unsafe.Pointer(&b)))
-        fmt.Println("b.f:", *(*C.float)(unsafe.Pointer(&b)))
-    }
-   ```
-   ```Go
-    /*
-    #include <stdint.h>
+//#include <stdlib.h>
+//void SayHello(char* s);
+import "C"
 
-    union B1 {
-        int i;
-        float f;
-    };
+import (
+    "fmt"
+    "unsafe"
+)
 
-    union B2 {
-        int8_t i8;
-        int64_t i64;
-    };
-    */
-    import "C"
-    import "fmt"
+func main() {
+    szStr := C.CString("Hello, World\n")
+    defer C.free(unsafe.Pointer(szStr))
 
-    func main() {
-        var b1 C.union_B1;
-        fmt.Printf("%T\n", b1) // [4]uint8
+    C.SayHello(szStr)
+}
 
-        var b2 C.union_B2;
-        fmt.Printf("%T\n", b2) // [8]uint8
-    }   
-   ```
-   ```Go
-    /*
-    enum C {
-        ONE,
-        TWO,
-    };
-    */
-    import "C"
-    import "fmt"
+//export SayHello
+func SayHello(s *C.char) {
+    fmt.Print(C.GoString(s))
+}
+```
 
-    func main() {
-        var c C.enum_C = C.TWO
-        fmt.Println(c)
-        fmt.Println(C.ONE)
-        fmt.Println(C.TWO)
-    }
-   ```
+#### 传递指针存在问题
 
-   - Go 调用 C 函数
-   ```Go
-    /*
-    #include <errno.h>
+Go是一种具有垃圾回收机制的语言，垃圾回收器需要知道指向Go内存的每个指针的位置。因此，在Go和C之间传递指针存在限制。
 
-    static int div(int a, int b) {
-        if(b == 0) {
-            errno = EINVAL;
-            return 0;
-        }
-        return a/b;
-    }
-    */
-    import "C"
-    import "fmt"
+Go调用C Code时，Go传递给C Code的Go指针所指的Go Memory中不能包含任何指向Go Memory的Pointer。因为后者指向Go Memory的指针有可能移动，**前者Go指针在调用期间会被隐式固定。**
 
-    func main() {
-        v0, err0 := C.div(2, 1)
-        // 2 <nil>
-        fmt.Println(v0, err0)
+如果写出上述代码，就会运行时报错：panic runtime error: cgo argument has Go pointer to Go pointer。如下例子所:
 
-        v1, err1 := C.div(1, 0)
-        // 0 invalid argument
-        fmt.Println(v1, err1)
-    }
-   ```
+```Go
+package main
 
-   - C 调用 Go
-   ```Go
-    package main
+/*
+#include <stdio.h>
+struct Foo {
+    int a;
+    int *p;
+};
 
-    //#include <stdlib.h>
-    //void SayHello(char* s);
-    import "C"
+void plusOne(struct Foo *f) {
+    (f->a)++;
+    *(f->p)++;
+}
+*/
+import "C"
+import "unsafe"
+import "fmt"
 
-    import (
-        "fmt"
-        "unsafe"
-    )
+func main() {
+    f := &C.struct_Foo{}
+    f.a = 5
+    f.p = (*C.int)((unsafe.Pointer)(new(int)))
+    // f.p = &f.a
 
-    func main() {
-        szStr := C.CString("Hello, World\n")
-        defer C.free(unsafe.Pointer(szStr))
+    C.plusOne(f)
+    fmt.Println(int(f.a))
+}
+```
 
-        C.SayHello(szStr)
-    }
+#### runtime.Pinner
 
-    //export SayHello
-    func SayHello(s *C.char) {
-        fmt.Print(C.GoString(s))
-    }
-   ```
+Go 1.21 版本，新增runtime.Pinner，用来​​手动​​告诉 Go 的垃圾回收器："​这块内存我现在要交给 C 代码了，在我说可以之前，你不要移动或回收它​​。
 
-   - 传递指针存在问题
-   > Go是一种具有垃圾回收机制的语言，垃圾回收器需要知道指向Go内存的每个指针的位置。因此，在Go和C之间传递指针存在限制。
-   >
-   > Go调用C Code时，Go传递给C Code的Go指针所指的Go Memory中不能包含任何指向Go Memory的Pointer。因为后者指向Go Memory的指针有可能移动，前者Go指针在调用期间会被隐式固定。
-   >
-   > 如果写出上述代码，就会运行时报错：panic runtime error: cgo argument has Go pointer to Go pointer。如下例子所:
-   ```Go
-    package main
+```Go
+package main
 
-    /*
-    #include <stdio.h>
-    struct Foo {
-        int a;
-        int *p;
-    };
+/*
+#include <stdio.h>
+struct Foo {
+    int a;
+    int *p;
+};
 
-    void plusOne(struct Foo *f) {
-        (f->a)++;
-        *(f->p)++;
-    }
-    */
-    import "C"
-    import "unsafe"
-    import "fmt"
+void plusOne(struct Foo *f) {
+    (f->a)++;
+    *(f->p)++;
+}
+*/
+import "C"
+import (
+    "fmt"
+    "runtime"
+    "unsafe"
+)
 
-    func main() {
-        f := &C.struct_Foo{}
-        f.a = 5
-        f.p = (*C.int)((unsafe.Pointer)(new(int)))
-        // f.p = &f.a
+func main() {
+    f := &C.struct_Foo{}
+    f.a = 5
+    f.p = (*C.int)((unsafe.Pointer)(new(int)))
+    // f.p = &f.a
 
-        C.plusOne(f)
-        fmt.Println(int(f.a))
-    }
-   ```
-   >  Go 1.21 版本，新增runtime.Pinner，用来​​手动​​告诉 Go 的垃圾回收器："​这块内存我现在要交给 C 代码了，在我说可以之前，你不要移动或回收它​​。
-   ```Go
-    package main
+    var pinner runtime.Pinner
+    defer pinner.Unpin()
+    pinner.Pin(f.p)
 
-    /*
-    #include <stdio.h>
-    struct Foo {
-        int a;
-        int *p;
-    };
-
-    void plusOne(struct Foo *f) {
-        (f->a)++;
-        *(f->p)++;
-    }
-    */
-    import "C"
-    import (
-        "fmt"
-        "runtime"
-        "unsafe"
-    )
-
-    func main() {
-        f := &C.struct_Foo{}
-        f.a = 5
-        f.p = (*C.int)((unsafe.Pointer)(new(int)))
-        // f.p = &f.a
-
-        var pinner runtime.Pinner
-        defer pinner.Unpin()
-        pinner.Pin(f.p)
-
-        C.plusOne(f)
-        fmt.Println(int(f.a))
-    }   
-   ```
+    C.plusOne(f)
+    fmt.Println(int(f.a))
+}   
+```
    
-   - 内部机制
-   > 常规编译 Go 代码，就是编译 + 链接，这两步。CGO编译多了一步，预编译，可以使用`go tool cgo`命令来预编译C代码。
+#### CGO内部机制
 
-   ![alt text](img/cgo_compile1.jpg)
+常规编译 Go 代码，就是编译 + 链接，这两步。CGO编译多了一步，预编译，可以使用`go tool cgo`命令来预编译C代码。
+
+![alt text](img/cgo_compile1.jpg)
    
-   > 总结：
-   > 1. Go=>C/Go=>C=>Go，其实就是system call的调度过程，需要切换g0栈，剩下就是正常的Go调度，GM和P分离，GM完成system call后，切换回g栈，会绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
-   > 2. C=>Go，这个比较复杂，c是宿主，go是脚本，c的线程被迫参与了Go的调度，存在可能被挂起。
-   > 
-   > Go=>C
-   >
-   > 1）entersyscall() 将当前的 M 与 P 剥离，防止 C 程序独占 M 时，阻塞 P 的调度。
-   > 
-   > 2）asmcgocall() 将栈切换到 g0 的系统栈，并执行 C 函数调用
-   >
-   > 3）exitsyscall()寻找合适的 P 来运行从 C 函数返回的 Go 程，优先选择调用 C 之前依附的 P，其次选择其他空闲的 P
+#### CGO调用机制
 
-   ![alt text](img/cgo_compile2.jpg)
+1. Go=>C/Go=>C=>Go，其实就是system call的调度过程，需要切换g0栈，剩下就是正常的Go调度，GM和P分离，GM完成system call后，切换回g栈，会绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
 
-   ![alt text](img/cgo_compile3.jpg)
+2. C=>Go，这个比较复杂，c是宿主，go是脚本，c的线程被迫参与了Go的调度，存在可能被挂起。
 
-   > C=>Go, go -> C -> go
-   > 
-   > 本来就存在GMP环境，当M中的任务（syscall or C function call）完成后继续运行的，会执行到 exitsyscall。此时会按照这个顺序去执行：绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
+##### CGO Go调用C
+   
+1. entersyscall() 将当前的 M 与 P 剥离，防止 C 程序独占 M 时，阻塞 P 的调度。
+ 
+2. asmcgocall() 将栈切换到 g0 的系统栈，并执行 C 函数调用
+   
+3. exitsyscall()寻找合适的 P 来运行从 C 函数返回的 Go 程，优先选择调用 C 之前依附的 P，其次选择其他空闲的 P
 
-   > C=>Go, 原生 C 调用 go(https://uncledou.site/2021/go-cgo/)
-   ```Go
-    package main
+![alt text](img/cgo_compile2.jpg)
 
-    import "C"
+![alt text](img/cgo_compile3.jpg)
 
-    //export AddFromGo
-    func AddFromGo(a int64, b int64) int64 {
-        return a + b
-    }
+##### 原生C调用Go
 
-    func main() {}
-   ```
-   ```SHELL
-   go build -o libgo-hello.dll -buildmode=c-shared hello.go
-   ```
-   ```C
-    #include <stdio.h>
-    #include "libgo-hello.h"
+C=>Go, go -> C -> go
 
-    int main() {
-        long a = 2;
-        long b = 3;
+本来就存在GMP环境，当M中的任务（syscall or C function call）完成后继续运行的，会执行到 exitsyscall。此时会按照这个顺序去执行：绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。
 
-        long r1 = AddFromGo(a, b);
+C=>Go, 原生 C 调用 go(https://uncledou.site/2021/go-cgo/)
 
-        printf("%ld + %ld = %ld\n", a, b, r1);
-    }
-   ```
-   ```SHELL
-   gcc -g -o hello hello.c -l go-hello -L. "-Wl,-rpath,."
-   ```
-   ```
-   PS C:\Users\Administrator\Desktop\go> .\hello.exe
-   2 + 3 = 5
-   ```
-   > 执行流程
-   > 
-   > 1. main
-   > 2. AddFromGo (libgo-hello.so 导出的函数，将函数参数写入到内存，一个 struct 中)
-   > 3. crosscall2 (准备进入 cgocallback 这个 go 函数，对接两边的 call ABI)
-   > 4. runtime.cgocallback （获取 M 和 P 等等，逻辑比较多）
-   > 5. _cgoexp_51fb23d6311d_AddFromGo (从内存读取参数)
-   > 5. main.AddFromGo
-   >
-   > 如何获取 M 和 P
-   > 
-   > 1. libgo-hello.so 加载的时候，会触发 go runtime 的初始化，创建 M 和 P；是的，除了 c 主程序的线程，还会另外创建一些 go 的 runtime 线程。
-   > 2. AddFromGo 函数中会检查 go runtime 是否已经初始化好了
-   > 3. 执行 main.AddFromGo 的时候，并没有真的切换到新的线程。而是当前线程获取一个伪装的 M，extra M，具体过程这块还没细看。
-   > 
-   > 调度机制
-   > 
-   > 简单情况下，M 和 P 资源都顺利拿到了，这个 c 线程，就可以在 M 绑定的 goroutine 中运行指定的 go 函数了。
-   > 
-   > 更进一步，如果 go 函数很简单，只是简单的做点纯 CPU 计算就结束了，那么这期间则不依赖 go 的调度
-   > 
-   > 有两种情况，会发生调度：
-   >
-   > 1) exitsyscall 获取不到 P(M必须先取得一个P后，才能从P的LRQ中取得G來执行, M一般来说是无限的，P一般来说是有限的)
-   > 
-   > 此时没法继续执行了，只能：
-   > 1. 将当前 extra M 上绑定的 g，放入全局 g 等待队列
-   > 2. 将当前 c 线程挂起，等待 g 被唤起执行
-   > 
-   > 在 g 被唤起执行的时候，因为 g 和 M 是绑定关系：
-   > 1. 执行 g 的那个线程，会挂起，让出 P，唤起等待的 c 线程
-   > 2. c 线程被唤起之后，拿到 P 继续执行
-   >
-   > 2) go 函数执行过程中发生了协程挂起
-   > 
-   > 发生 system call, 当前 g 会挂起，一般p会绑定下一个M，唤醒下一个 g，继续执行。此时c线程就被过挂起了。
-   > 
-   > system call结束以后，绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。c 线程被唤醒后，拿到 P，继续执行。
+```Go
+package main
 
-#### 泛型(https://segmentfault.com/a/1190000041634906)
+import "C"
+
+//export AddFromGo
+func AddFromGo(a int64, b int64) int64 {
+    return a + b
+}
+
+func main() {}
+```
+
+```SHELL
+go build -o libgo-hello.dll -buildmode=c-shared hello.go
+```
+
+```C
+#include <stdio.h>
+#include "libgo-hello.h"
+
+int main() {
+    long a = 2;
+    long b = 3;
+
+    long r1 = AddFromGo(a, b);
+
+    printf("%ld + %ld = %ld\n", a, b, r1);
+}
+```
+   
+```SHELL
+gcc -g -o hello hello.c -l go-hello -L. "-Wl,-rpath,."
+```
+
+```SHELL
+PS C:\Users\Administrator\Desktop\go> .\hello.exe
+2 + 3 = 5
+```
+
+> 执行流程
+> 
+> 1. main
+> 2. AddFromGo (libgo-hello.so 导出的函数，将函数参数写入到内存，一个 struct 中)
+> 3. crosscall2 (准备进入 cgocallback 这个 go 函数，对接两边的 call ABI)
+> 4. runtime.cgocallback （获取 M 和 P 等等，逻辑比较多）
+> 5. _cgoexp_51fb23d6311d_AddFromGo (从内存读取参数)
+> 5. main.AddFromGo
+>
+> 如何获取 M 和 P
+> 
+> 1. libgo-hello.so 加载的时候，会触发 go runtime 的初始化，创建 M 和 P；是的，除了 c 主程序的线程，还会另外创建一些 go 的 runtime 线程。
+> 2. AddFromGo 函数中会检查 go runtime 是否已经初始化好了
+> 3. 执行 main.AddFromGo 的时候，并没有真的切换到新的线程。而是当前线程获取一个伪装的 M，extra M，具体过程这块还没细看。
+> 
+> 调度机制
+> 
+> 简单情况下，M 和 P 资源都顺利拿到了，这个 c 线程，就可以在 M 绑定的 goroutine 中运行指定的 go 函数了。
+> 
+> 更进一步，如果 go 函数很简单，只是简单的做点纯 CPU 计算就结束了，那么这期间则不依赖 go 的调度
+> 
+> 有两种情况，会发生调度：
+>
+> 1) exitsyscall 获取不到 P(M必须先取得一个P后，才能从P的LRQ中取得G來执行, M一般来说是无限的，P一般来说是有限的)
+> 
+> 此时没法继续执行了，只能：
+> 1. 将当前 extra M 上绑定的 g，放入全局 g 等待队列
+> 2. 将当前 c 线程挂起，等待 g 被唤起执行
+> 
+> 在 g 被唤起执行的时候，因为 g 和 M 是绑定关系：
+> 1. 执行 g 的那个线程，会挂起，让出 P，唤起等待的 c 线程
+> 2. c 线程被唤起之后，拿到 P 继续执行
+>
+> 2) go 函数执行过程中发生了协程挂起
+> 
+> 发生 system call, 当前 g 会挂起，一般p会绑定下一个M，唤醒下一个 g，继续执行。此时c线程就被过挂起了。
+> 
+> system call结束以后，绑定 oldp 恢复执行，绑定其他空闲的 P 恢复执行，放回到运行队列等待调度。c 线程被唤醒后，拿到 P，继续执行。
+
+### 泛型
+
+[泛型](https://segmentfault.com/a/1190000041634906)
 
 ![alt text](img/generic1.webp)
 > 在Go1.18之前，Go官方对 接口(interface) 的定义是：接口是一个方法集(method set)
