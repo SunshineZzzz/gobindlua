@@ -12,6 +12,7 @@
 - [底层数据类型](#底层数据类型)
 - [Go并发哲学](#go并发哲学)
 - [context](#context)
+    - [context简单使用](#context简单使用)
     - [context源码](#context源码)
 - [CGO](#cgo)
     - [启用CGO](#启用cgo)
@@ -31,6 +32,20 @@
         - [原生C调用Go](#原生c调用go)
 - [泛型](#泛型)
 - [slog](#slog)
+- [GoGC](#gogc)
+    - [GoGCV13](#gogcv13)
+    - [GoGCV15](#gogcv15)
+        - [强三色不变式](#强三色不变式)
+        - [弱三色不变式](#弱三色不变式)
+        - [屏障机制](#屏障机制)
+            - [插入写屏障](#插入写屏障)
+            - [删除写屏障](#删除写屏障)
+    - [GoGCV18](#gogcv18)
+    - [GolangGC过程](#golanggc过程)
+        - [Marking setup](#marking-setup)
+        - [Marking](#marking)
+        - [Mark终止](#mark终止)
+        - [Sweep](#sweep)
 
 ### GMP
    - M:N模型
@@ -293,7 +308,9 @@ var kindNames = []string{
 // Go数组类型
 type ArrayType struct {
 	Type
+    // 数组元素的类型
 	Elem  *Type // array element type
+    // 关联切片类型
 	Slice *Type // slice type
 	Len   uintptr
 }
@@ -772,10 +789,16 @@ func main() {
 
 ### context
 
-> 在Go服务中，往往由一个独立的goroutine去处理一次请求，但在这个goroutine中，可能会开启别的goroutine去执行一些具体的事务，如数据库，RPC等，同时，这一组goroutine可能还需要共同访问一些特殊的值，如用户token, 请求过期时间等，当一个请求超时后，我们希望与此请求有关的所有goroutine都能快速退出，以回收系统资源。所以我们需要一种可以跟踪goroutine的方案，才可以达到控制他们的目的，这就是 Go语言为我们提供的Context，称之为上下文非常贴切，它就是goroutine的上下文。
->
+context 主要用来在 goroutine 之间传递上下文信息，包括：取消信号、超时时间、截止时间、k-v。
 
-```Go
+#### context简单使用
+
+1. WithCancel，返回一个ctx，cancel函数, 前者用于传参，后者函数被调用则可以主动停止下游goroutine。
+2. WithValue，返回一个ctx, cancel函数，前者用于传参，后者函数被调用则可以主动停止下游goroutine。并且可以在下游任何一个嵌套的context中通过key获取value。
+3. WithTimeout，返回一个ctx, cancel函数，前者用于传参，后者函数被调用则可以主动停止下游goroutine。并且过了传参的时间段在不主动调用cancel函数，也会自动停止下游goroutine。
+4. WithDeadline，返回一个ctx, cancel函数，前者用于传参，后者函数被调用则可以主动停止下游goroutine。并且到了传参的截止时间点在不主动调用cancel函数，也会自动停止下游goroutine。
+
+```GO
 package main
 
 import (
@@ -784,76 +807,76 @@ import (
 	"time"
 )
 
-func useContext(ctx context.Context, idStr string) {
+func workWithValue(ctx context.Context, name string) {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("useContext stop", idStr)
+			println(name, " get message to quit")
 			return
-		case <-time.After(time.Second):
-			fmt.Println("running,", idStr)
+		default:
+			println(name, " is running", time.Now().String())
+			fmt.Println(ctx.Value(TestKey))
+			time.Sleep(time.Second)
 		}
 	}
 }
 
-func G1_1(ctx context.Context) {
-	useContext(ctx, "G1_1")
-}
-
-func G1(ctx context.Context) {
-	nCtx, nStop := context.WithCancel(ctx)
-
-	go G1_1(nCtx)
-
+func work(ctx context.Context, name string) {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("G1 stop")
-			nStop()
+			println(name, " get message to quit")
 			return
-		case <-time.After(time.Second):
-			fmt.Println("running, G1")
+		default:
+			println(name, " is running", time.Now().String())
+			time.Sleep(time.Second)
 		}
 	}
 }
 
-func G2(ctx context.Context) {
-	tCtx, _ := context.WithTimeout(ctx, time.Second*3)
-	useContext(tCtx, "G2")
-}
+// 下面两句这样做的目的是:
+// 全局命名冲突造成的相互覆盖，很难查BUG
+// 为了避免这种冲突，应该定义一个新的、零值大小且不可导出的类型来作为键
+type testKeyType string
 
-func G3(ctx context.Context) {
-	tCtx, _ := context.WithTimeout(ctx, time.Second*2)
-
-	for {
-		select {
-		case <-tCtx.Done():
-			fmt.Println("G3 stop")
-			return
-		case <-time.After(time.Second):
-			fmt.Println("running,", "G3,", tCtx.Value(userKey))
-		}
-	}
-}
-
-type key int
-
-var userKey key
+const TestKey testKeyType = "key"
 
 func main() {
-	wCtx := context.WithValue(context.Background(), userKey, "value")
-	ctx, done := context.WithCancel(wCtx)
+	// cancel
+	ctx1, cancel := context.WithCancel(context.Background())
+	go work(ctx1, "work1")
 
-	go G1(ctx)
-	go G2(ctx)
-	go G3(ctx)
+	time.Sleep(time.Second * 3)
 
-	// 等待10秒
-	time.Sleep(10 * time.Second)
-	// 关闭父上下文
-	done()
-	// 等待10秒，目的是等待其他goroutine结束
-	time.Sleep(10 * time.Second)
+	cancel()
+
+	time.Sleep(time.Second * 1)
+
+	// with value
+	ctx2, valueCancel := context.WithCancel(context.Background())
+	valueCtx := context.WithValue(ctx2, TestKey, "test value context")
+	go workWithValue(valueCtx, "value work")
+
+	time.Sleep(time.Second * 3)
+
+	valueCancel()
+
+	time.Sleep(time.Second * 1)
+
+	// timeout
+	ctx2, timeCancel := context.WithTimeout(context.Background(), time.Second*3)
+	go work(ctx2, "time cancel")
+
+	time.Sleep(time.Second * 5)
+
+	timeCancel()
+
+	// deadline
+	ctx3, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second*3))
+	go work(ctx3, "deadline cancel")
+
+	time.Sleep(time.Second * 5)
+	deadlineCancel()
 }
 ```
 
@@ -879,7 +902,7 @@ type stringer interface {
 
 // 上下文接口
 type Context interface {
-    // 过期时间，是否设置了过期时间
+    // 返回过期时间，是否设置了过期时间
     Deadline() (deadline time.Time, ok bool)
     // 是否可以结束channel
     Done() <-chan struct{}
@@ -2084,3 +2107,138 @@ func (lru *LRUCache[KT, VT]) Delete(key KT) {
     {"time":"2025-09-27T17:13:28.9114388+08:00","level":"ERROR","msg":"oops","field1":"value1","field2":"value2","netErrs":"use of closed network connection","status":500}
     {"time":"2025-09-27T17:13:28.9114388+08:00","level":"ERROR","msg":"oops","field1":"value1","field2":"value2","status":500,"err":"use of closed network connection"}
    ```
+
+### golangGC
+
+#### GoGCV13
+
+mark and sweep算法
+
+![alt text](img/GoGCV13.png)
+
+优点是足够简单，易于理解，缺点则是它必须一步到位执行完，本质就是stop the world的gc机制
+
+#### GoGCV15
+
+三色并发标记法
+
+![alt text](img/GoGCV15.png)
+
+在三色标记法的过程中对象丢失(误删除)，需要同时满足下面两个条件：
+
+条件一：白色对象被黑色对象引用
+
+条件二：灰色对象与白色对象之间的可达关系遭到破坏
+
+要把上面两个条件破坏掉一个，就可以保证对象不丢失(误删)，所以我们的golang团队就提出了两种破坏条件的方式：强三色不变式和弱三色不变式。
+
+##### 强三色不变式
+
+规则：不允许黑色对象引用白色对象
+
+![alt text](img/GoGCV15_sti1.png)
+
+##### 弱三色不变式
+
+规则：允许黑色对象引用白色对象，但是白色对象的上游必须存在灰色对象
+
+![alt text](img/GoGCV15_wti1.png)
+
+##### 屏障机制
+
+Golang团队遵循上述两种不变式提到的原则，分别提出了两种实现机制：插入写屏障和删除写屏障。
+
+###### 插入写屏障
+
+规则：当一个黑色对象引用另外一个白色对象时，将另外一个白色对象标记为灰色。
+
+需要注意的是，**堆上的对象才会触发插入写屏障**，栈上的对象不会触发。插入写屏障最大的弊端就是，**在一次正常的三色标记流程结束后，需要对栈上重新进行一次stw，然后再扫描(Rescan)一次**。
+
+比如：
+
+![alt text](img/GoGCV15_ib1.png)
+
+![alt text](img/GoGCV15_ib2.png)
+
+![alt text](img/GoGCV15_ib3.png)
+
+##### 删除写屏障
+
+规则：在删除引用时，如果被删除引用的对象自身为白色，那么被标记为灰色。
+
+
+引入删除写屏障，有一个弊端，就是一个对象的引用被删除后，即使没有其他存活的对象引用它，它仍然会活到下一轮。**如此一来，会产生很多的冗余扫描成本，且降低了回收精度。**
+
+比如：
+
+![alt text](img/GoGCV15_db1.png)
+
+#### GoGCV18
+
+Go 1.8 将上述两者结合，彻底解决了 STW 扫描栈的问题
+
+执行流程：
+
+GC 开始将栈上的对象全部扫描并标记为黑色；
+
+GC 期间，任何在栈上创建的新对象，均为黑色；
+
+混合写屏障：
+
+被删除对象涂灰，其实就是删除写屏障，将被删除的对象标记为灰色。
+
+被添加对象涂灰，其实就是插入写屏障，将被添加的对象标记为灰色。
+
+```
+// 伪代码：混合写屏障在堆上的表现
+writeBarrier(slot, ptr):
+    shade(*slot) // 将旧值（被删除者）涂灰
+    shade(ptr)   // 将新值（被添加者）涂灰
+    *slot = ptr
+```
+
+
+上面最后两句话明显和lua不一样，向后设置barrier，这种是将黑色对象设置为灰色，然后放入grayagain列表。lua就存在一个**原子阶段(STW)**。
+
+**本质原因还是，lua是单线程的，如果不这样做，有可能永远都没法扫描完成。golang是并行GC。**
+
+
+**为什么栈由系统回收，GC 还需要扫描它？**
+
+如果栈上有一个局部变量是一个指针，指向堆上的某块内存，那么栈就是这块堆内存的“根”（Root）。
+
+**为什么混合写屏障要把栈“置黑”？**
+
+确保在整个标记期间，堆上的屏障机制只需要盯着堆内存的变动，而不需要去监控频率极高的栈操作。
+
+**栈上变化极大，有可能延迟释放，也就是下一轮释放**
+
+如果一个栈上的指针在“被扫描并置黑”之后变成了 nil（函数结束或变量失效），由于没有写屏障监控栈的变化，GC 依然会认为它指向的堆对象是“存活”的。
+
+Go 团队认为，允许少量的浮动垃圾多活一轮 GC，其代价远小于在每次栈操作时都执行写屏障指令带来的性能损失。下一轮 GC 开始时，这些对象会因为不再被栈引用而被正确回收。
+
+#### GolangGC过程
+
+##### Marking setup
+
+为了打开写屏障，必须停止每个goroutine，不停的话存在竞态问题。
+
+##### Marking
+
+一旦写屏障打开，垃圾收集器就开始标记阶段，垃圾收集器所做的第一件事是占用25%CPU。
+
+标记阶段需要标记在堆内存中仍然在使用中的值。首先检查所有现goroutine的堆栈，以找到堆内存的根指针。然后收集器必须从那些根指针遍历堆内存图，标记可以回收的内存。
+
+当存在新的内存分配时，会暂停分配内存过快的那些 goroutine，并将其转去执行一些辅助标记（Mark Assist）的工作，从而达到放缓继续分配、辅助 GC 的标记工作的目的。
+
+##### Mark终止
+
+关闭写屏障，执行各种清理任务（STW - optional ），我觉得这里应该是会STW
+
+##### Sweep 
+
+Go 并不是在标记结束后一次性把所有垃圾都扫走，而是把清理工作摊派给了每一个正在运行的协程。
+
+清理的损耗不再集中在标记结束后的那一秒，而是分散到了接下来的几分钟、甚至更久，分摊到了每一次 new 或 make 的操作中。
+
+如果某块内存一直没人申请，GC 甚至可能永远不去清理它，直到下一次 GC 循环开始。
